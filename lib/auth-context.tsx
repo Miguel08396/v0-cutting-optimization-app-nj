@@ -2,7 +2,7 @@
 
 import type React from "react"
 import { createContext, useContext, useState, useEffect } from "react"
-import { createClient } from "@/lib/supabase/client"
+import { loginUser } from "@/lib/services/auth-service"
 
 export type UserRole = "cortador" | "jefe_ventas" | "asesor_ventas"
 
@@ -38,33 +38,20 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const login = async (email: string, password: string): Promise<boolean> => {
     try {
-      const supabase = createClient()
-
-      const { data: foundUser, error } = await supabase
-        .from("usuarios")
-        .select("*")
-        .eq("email", email)
-        .eq("activo", true)
-        .single()
-
       console.log("[v0] Intentando login con:", email)
-      console.log("[v0] Usuario encontrado:", foundUser)
 
-      if (error || !foundUser) {
-        console.log("[v0] Login fallido - usuario no encontrado")
-        return false
-      }
+      const result = await loginUser(email, password)
 
-      if (foundUser.password !== password) {
-        console.log("[v0] Login fallido - contraseña incorrecta")
+      if (!result.success || !result.user) {
+        console.log("[v0] Login fallido:", result.error)
         return false
       }
 
       const userData: User = {
-        id: foundUser.id,
-        nombre: foundUser.nombre,
-        role: foundUser.role,
-        es_baseline: foundUser.es_baseline,
+        id: result.user.id,
+        nombre: result.user.nombre,
+        role: result.user.role as UserRole,
+        es_baseline: result.user.es_baseline,
       }
 
       setUser(userData)

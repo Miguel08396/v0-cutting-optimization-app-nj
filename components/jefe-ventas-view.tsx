@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useEffect } from "react"
+import { useState, useEffect, useCallback } from "react"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import {
@@ -17,26 +17,24 @@ import {
   LineChart,
   Line,
 } from "recharts"
-import { CorteController } from "@/lib/corte-controller"
-import { NotaPedidoController } from "@/lib/nota-pedido-controller"
-import { UserModel, type Usuario } from "@/lib/user-model"
-import { Users, Clock, Target, AlertCircle, UserPlus, Trash2, FileText, Download } from "lucide-react"
+import { Users, Clock, Target, AlertCircle, UserPlus, Trash2, FileText, Download, Wifi, WifiOff } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { format } from "date-fns"
+import { createClient } from "@/lib/supabase/client"
+import { useRealtimeNotas, useRealtimeDashboard } from "@/lib/hooks/use-realtime"
+import { registerUser, getAllUsers, deactivateUser } from "@/lib/services/auth-service"
+import type { Usuario, NotaPedido } from "@/lib/supabase/types"
 
 const COLORS = ["#FFEB3B", "#1E1E1E", "#FDD835", "#424242", "#FFEE58"]
 
 export function JefeVentasView() {
-  const [controller] = useState(() => new CorteController())
-  const [npController] = useState(() => new NotaPedidoController())
-  const [userModel] = useState(() => UserModel.getInstance())
-  const [cortes, setCortes] = useState(controller.obtenerTodosLosCortes())
-  const [notasPedido, setNotasPedido] = useState(npController.obtenerTodasLasNotas())
+  const [notasPedidoData, setNotasPedidoData] = useState<NotaPedido[]>([])
   const [usuarios, setUsuarios] = useState<Usuario[]>([])
+  const [isLoading, setIsLoading] = useState(true)
 
   const [nuevoUsuario, setNuevoUsuario] = useState({
     nombre: "",
@@ -47,53 +45,70 @@ export function JefeVentasView() {
 
   const [busquedaNP, setBusquedaNP] = useState("")
 
+  const { notas, isConnected, refreshNotas } = useRealtimeNotas(notasPedidoData)
+  const { lastUpdate } = useRealtimeDashboard()
+
+  // Cargar datos iniciales desde Supabase
+  const cargarDatos = useCallback(async () => {
+    const supabase = createClient()
+
+    const [notasRes, usuariosRes] = await Promise.all([
+      supabase.from("notas_pedido").select("*").order("fecha_creacion", { ascending: false }),
+      getAllUsers(),
+    ])
+
+    if (notasRes.data) {
+      setNotasPedidoData(notasRes.data as NotaPedido[])
+      refreshNotas(notasRes.data as NotaPedido[])
+    }
+
+    setUsuarios(usuariosRes)
+    setIsLoading(false)
+  }, [refreshNotas])
+
   useEffect(() => {
-    const interval = setInterval(() => {
-      setCortes(controller.obtenerTodosLosCortes())
-      setNotasPedido(npController.obtenerTodasLasNotas())
-      setUsuarios(userModel.obtenerTodosLosUsuarios())
-    }, 2000)
+    cargarDatos()
+  }, [cargarDatos])
 
-    setUsuarios(userModel.obtenerTodosLosUsuarios())
+  // Recargar cuando haya actualizaciones realtime
+  useEffect(() => {
+    if (lastUpdate) {
+      cargarDatos()
+    }
+  }, [lastUpdate, cargarDatos])
 
-    return () => clearInterval(interval)
-  }, [controller, npController, userModel])
+  // Usar notas del hook realtime
+  const notasPedido = notas.length > 0 ? notas : notasPedidoData
 
-  const handleCrearUsuario = () => {
+  const handleCrearUsuario = async () => {
     if (!nuevoUsuario.nombre || !nuevoUsuario.email || !nuevoUsuario.password) {
       alert("Por favor complete todos los campos")
       return
     }
 
-    const existente = userModel.obtenerUsuarioPorEmail(nuevoUsuario.email)
-    if (existente) {
-      alert("Error: El email ya está registrado")
+    const result = await registerUser(nuevoUsuario.nombre, nuevoUsuario.email, nuevoUsuario.password, nuevoUsuario.role)
+
+    if (!result.success) {
+      alert(result.error || "Error al crear usuario")
       return
     }
 
-    const usuario = userModel.crearUsuario({
-      nombre: nuevoUsuario.nombre,
-      email: nuevoUsuario.email,
-      password: nuevoUsuario.password,
-      role: nuevoUsuario.role,
-      activo: true,
-    })
-
-    setUsuarios(userModel.obtenerTodosLosUsuarios())
+    setUsuarios(await getAllUsers())
     setNuevoUsuario({ nombre: "", email: "", password: "", role: "cortador" })
     alert(`Usuario ${nuevoUsuario.nombre} creado exitosamente`)
   }
 
-  const handleEliminarUsuario = (id: string) => {
+  const handleEliminarUsuario = async (id: string) => {
     if (confirm("¿Está seguro de eliminar este usuario?")) {
-      userModel.desactivarUsuario(id)
-      setUsuarios(userModel.obtenerTodosLosUsuarios())
+      await deactivateUser(id)
+      setUsuarios(await getAllUsers())
     }
   }
 
+  // Cálculos de métricas usando los datos de Supabase
   const cortesHoy = notasPedido.filter((np) => {
     const hoy = new Date()
-    const fechaProceso = np.fechaInicioProceso ? new Date(np.fechaInicioProceso) : null
+    const fechaProceso = np.fecha_inicio_proceso ? new Date(np.fecha_inicio_proceso) : null
     return (
       fechaProceso &&
       fechaProceso.getDate() === hoy.getDate() &&
@@ -107,8 +122,18 @@ export function JefeVentasView() {
   const tiempoPromedio =
     cortesCompletados.length > 0
       ? cortesCompletados.reduce((acc, np) => {
-          const tiempoTotal = (np.tiempoCorte || 0) + (np.tiempoEnchapeRigido || 0) + (np.tiempoEnchapeFlexible || 0)
+          const tiempoTotal =
+            (np.tiempo_corte || 0) + (np.tiempo_enchape_rigido || 0) + (np.tiempo_enchape_flexible || 0)
           return acc + tiempoTotal
+        }, 0) /
+        cortesCompletados.length /
+        60
+      : 0
+
+  const tiempoPausadoPromedio =
+    cortesCompletados.length > 0
+      ? cortesCompletados.reduce((acc, np) => {
+          return acc + (np.tiempo_pausado_corte || 0) + (np.tiempo_pausado_enchape || 0)
         }, 0) /
         cortesCompletados.length /
         60
@@ -119,18 +144,23 @@ export function JefeVentasView() {
   )
   const npsCompletadas = notasPedido.filter((np) => np.estado === "completado" || np.estado === "cerrado")
 
-  const cortadoresMap = new Map<string, { nombre: string; cortes: number; tiempoPromedio: number }>()
+  const cortadoresMap = new Map<
+    string,
+    { nombre: string; cortes: number; tiempoPromedio: number; tiempoPausado: number }
+  >()
   notasPedido.forEach((np) => {
-    if (np.cortadorNombre && (np.estado === "completado" || np.estado === "cerrado")) {
-      const existente = cortadoresMap.get(np.cortadorNombre) || {
-        nombre: np.cortadorNombre,
+    if (np.cortador_nombre && (np.estado === "completado" || np.estado === "cerrado")) {
+      const existente = cortadoresMap.get(np.cortador_nombre) || {
+        nombre: np.cortador_nombre,
         cortes: 0,
         tiempoPromedio: 0,
+        tiempoPausado: 0,
       }
       existente.cortes += 1
-      const tiempoTotal = (np.tiempoCorte || 0) + (np.tiempoEnchapeRigido || 0) + (np.tiempoEnchapeFlexible || 0)
+      const tiempoTotal = (np.tiempo_corte || 0) + (np.tiempo_enchape_rigido || 0) + (np.tiempo_enchape_flexible || 0)
       existente.tiempoPromedio += tiempoTotal
-      cortadoresMap.set(np.cortadorNombre, existente)
+      existente.tiempoPausado += (np.tiempo_pausado_corte || 0) + (np.tiempo_pausado_enchape || 0)
+      cortadoresMap.set(np.cortador_nombre, existente)
     }
   })
 
@@ -138,16 +168,17 @@ export function JefeVentasView() {
     nombre: c.nombre,
     cortes: c.cortes,
     tiempoPromedio: c.cortes > 0 ? Math.round(c.tiempoPromedio / c.cortes / 60) : 0,
+    tiempoPausado: c.cortes > 0 ? Math.round(c.tiempoPausado / c.cortes / 60) : 0,
   }))
 
   const distribucionMaquinas = [
     {
       name: "Sierra Striebig",
-      value: notasPedido.filter((np) => np.corteCompletado).length,
+      value: notasPedido.filter((np) => np.corte_completado).length,
     },
     {
       name: "Enchapadora Fravol",
-      value: notasPedido.filter((np) => np.enchapeCompletado).length,
+      value: notasPedido.filter((np) => np.enchape_completado).length,
     },
   ]
 
@@ -155,7 +186,7 @@ export function JefeVentasView() {
     const fecha = new Date()
     fecha.setDate(fecha.getDate() - (6 - i))
     const npsDia = notasPedido.filter((np) => {
-      const fechaProceso = np.fechaInicioProceso ? new Date(np.fechaInicioProceso) : null
+      const fechaProceso = np.fecha_inicio_proceso ? new Date(np.fecha_inicio_proceso) : null
       return (
         fechaProceso &&
         fechaProceso.getDate() === fecha.getDate() &&
@@ -170,43 +201,14 @@ export function JefeVentasView() {
     }
   })
 
-  const asesoresMap = new Map<string, { nombre: string; cantidad: number }>()
-  notasPedido.forEach((np) => {
-    const existente = asesoresMap.get(np.asesorId) || { nombre: np.asesorNombre, cantidad: 0 }
-    existente.cantidad += 1
-    asesoresMap.set(np.asesorId, existente)
-  })
-
-  const datosAsesores = Array.from(asesoresMap.values())
-
-  const npsEstados = [
-    { name: "Pendiente", value: notasPedido.filter((np) => np.estado === "pendiente").length },
-    {
-      name: "En Proceso",
-      value: notasPedido.filter((np) => np.estado === "en_corte" || np.estado === "en_enchape").length,
-    },
-    {
-      name: "Completado",
-      value: notasPedido.filter((np) => np.estado === "completado" || np.estado === "cerrado").length,
-    },
-  ]
-
   const notasConPlanos = notasPedido.filter((np) => {
-    console.log("[v0] Revisando NP:", np.numero, "archivosPed:", np.archivosPed?.length || 0) // Debug
-
-    // Si hay búsqueda, filtrar por número de NP
     if (busquedaNP.trim()) {
-      return np.numero.toLowerCase().includes(busquedaNP.toLowerCase()) && np.archivosPed && np.archivosPed.length > 0
+      return np.numero.toLowerCase().includes(busquedaNP.toLowerCase()) && np.archivos_ped && np.archivos_ped.length > 0
     }
-
-    // Sin búsqueda, mostrar todas las notas con planos
-    return np.archivosPed && np.archivosPed.length > 0
+    return np.archivos_ped && np.archivos_ped.length > 0
   })
 
-  console.log("[v0] Total notas con planos:", notasConPlanos.length) // Debug
-
-  const descargarPlano = (archivo: { nombre: string; url: string; fechaSubida: Date }) => {
-    console.log("[v0] Descargando plano:", archivo.nombre) // Debug
+  const descargarPlano = (archivo: { nombre: string; url: string; fechaSubida?: string }) => {
     try {
       const link = document.createElement("a")
       link.href = archivo.url
@@ -214,21 +216,46 @@ export function JefeVentasView() {
       document.body.appendChild(link)
       link.click()
       document.body.removeChild(link)
-      console.log("[v0] Plano descargado exitosamente") // Debug
     } catch (error) {
       console.error("[v0] Error al descargar plano:", error)
     }
   }
 
+  if (isLoading) {
+    return (
+      <div className="flex items-center justify-center h-64">
+        <div className="text-center">
+          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary mx-auto"></div>
+          <p className="mt-4 text-muted-foreground">Cargando datos...</p>
+        </div>
+      </div>
+    )
+  }
+
   return (
     <div className="space-y-6">
-      <div>
-        <h2 className="text-3xl font-bold text-foreground">Panel del Jefe de Ventas</h2>
-        <p className="text-muted-foreground">Vista general del rendimiento del centro de corte</p>
+      <div className="flex items-center justify-between">
+        <div>
+          <h2 className="text-3xl font-bold text-foreground">Panel del Jefe de Ventas</h2>
+          <p className="text-muted-foreground">Vista general del rendimiento del centro de corte</p>
+        </div>
+        <div className="flex items-center gap-2">
+          {isConnected ? (
+            <Badge variant="outline" className="bg-green-500/10 text-green-500 border-green-500/20">
+              <Wifi className="h-3 w-3 mr-1" />
+              En vivo
+            </Badge>
+          ) : (
+            <Badge variant="outline" className="bg-yellow-500/10 text-yellow-500 border-yellow-500/20">
+              <WifiOff className="h-3 w-3 mr-1" />
+              Reconectando...
+            </Badge>
+          )}
+        </div>
       </div>
 
       {/* KPIs principales */}
-      <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
+      <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-5">
         <Card className="border-l-4 border-l-primary">
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
             <CardTitle className="text-sm font-medium">Cortes Hoy</CardTitle>
@@ -248,6 +275,17 @@ export function JefeVentasView() {
           <CardContent>
             <div className="text-2xl font-bold">{Math.round(tiempoPromedio)} min</div>
             <p className="text-xs text-muted-foreground">Por trabajo completado</p>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+            <CardTitle className="text-sm font-medium">Tiempo Pausado</CardTitle>
+            <Clock className="h-4 w-4 text-yellow-500" />
+          </CardHeader>
+          <CardContent>
+            <div className="text-2xl font-bold text-yellow-600">{Math.round(tiempoPausadoPromedio)} min</div>
+            <p className="text-xs text-muted-foreground">Promedio por trabajo</p>
           </CardContent>
         </Card>
 
@@ -319,8 +357,8 @@ export function JefeVentasView() {
 
           <Card>
             <CardHeader>
-              <CardTitle>Tiempo Promedio por Cortador</CardTitle>
-              <CardDescription>Minutos por trabajo completado</CardDescription>
+              <CardTitle>Tiempo Pausado por Cortador</CardTitle>
+              <CardDescription>Minutos de pausa promedio por trabajo</CardDescription>
             </CardHeader>
             <CardContent className="h-80">
               {rendimientoCortadores.length > 0 ? (
@@ -337,7 +375,8 @@ export function JefeVentasView() {
                         color: "hsl(var(--foreground))",
                       }}
                     />
-                    <Bar dataKey="tiempoPromedio" fill="#1E1E1E" name="Minutos" radius={[0, 8, 8, 0]} />
+                    <Bar dataKey="tiempoPromedio" fill="#1E1E1E" name="Tiempo Activo (min)" radius={[0, 8, 8, 0]} />
+                    <Bar dataKey="tiempoPausado" fill="#FFA726" name="Tiempo Pausado (min)" radius={[0, 8, 8, 0]} />
                   </BarChart>
                 </ResponsiveContainer>
               ) : (
@@ -443,11 +482,11 @@ export function JefeVentasView() {
               <CardDescription>
                 Detalles de tiempos por nota - Promedio:{" "}
                 {cortesCompletados.length > 0
-                  ? `${Math.round(cortesCompletados.reduce((acc, np) => acc + (np.cantidadLaminas || 1), 0) / cortesCompletados.length)} láminas/nota, ${Math.round(
+                  ? `${Math.round(cortesCompletados.reduce((acc, np) => acc + (np.cantidad_laminas || 1), 0) / cortesCompletados.length)} láminas/nota, ${Math.round(
                       cortesCompletados.reduce((acc, np) => {
                         const tiempoTotal =
-                          (np.tiempoCorte || 0) + (np.tiempoEnchapeRigido || 0) + (np.tiempoEnchapeFlexible || 0)
-                        return acc + tiempoTotal / (np.cantidadLaminas || 1)
+                          (np.tiempo_corte || 0) + (np.tiempo_enchape_rigido || 0) + (np.tiempo_enchape_flexible || 0)
+                        return acc + tiempoTotal / (np.cantidad_laminas || 1)
                       }, 0) /
                         cortesCompletados.length /
                         60,
@@ -459,25 +498,31 @@ export function JefeVentasView() {
               <div className="space-y-3 max-h-[600px] overflow-y-auto">
                 {cortesCompletados.length > 0 ? (
                   cortesCompletados.map((np) => {
-                    const tiempoCorteMin = np.tiempoCorte ? Math.floor(np.tiempoCorte / 60) : 0
-                    const tiempoCorteSegs = np.tiempoCorte ? np.tiempoCorte % 60 : 0
-                    const tiempoEnchapeRigidoMin = np.tiempoEnchapeRigido ? Math.floor(np.tiempoEnchapeRigido / 60) : 0
-                    const tiempoEnchapeRigidoSegs = np.tiempoEnchapeRigido ? np.tiempoEnchapeRigido % 60 : 0
-                    const tiempoEnchapeFlexibleMin = np.tiempoEnchapeFlexible
-                      ? Math.floor(np.tiempoEnchapeFlexible / 60)
+                    const tiempoCorteMin = np.tiempo_corte ? Math.floor(np.tiempo_corte / 60) : 0
+                    const tiempoCorteSegs = np.tiempo_corte ? np.tiempo_corte % 60 : 0
+                    const tiempoEnchapeRigidoMin = np.tiempo_enchape_rigido
+                      ? Math.floor(np.tiempo_enchape_rigido / 60)
                       : 0
-                    const tiempoEnchapeFlexibleSegs = np.tiempoEnchapeFlexible ? np.tiempoEnchapeFlexible % 60 : 0
+                    const tiempoEnchapeRigidoSegs = np.tiempo_enchape_rigido ? np.tiempo_enchape_rigido % 60 : 0
+                    const tiempoEnchapeFlexibleMin = np.tiempo_enchape_flexible
+                      ? Math.floor(np.tiempo_enchape_flexible / 60)
+                      : 0
+                    const tiempoEnchapeFlexibleSegs = np.tiempo_enchape_flexible ? np.tiempo_enchape_flexible % 60 : 0
                     const tiempoTotal =
-                      (np.tiempoCorte || 0) + (np.tiempoEnchapeRigido || 0) + (np.tiempoEnchapeFlexible || 0)
+                      (np.tiempo_corte || 0) + (np.tiempo_enchape_rigido || 0) + (np.tiempo_enchape_flexible || 0)
                     const tiempoTotalMin = Math.floor(tiempoTotal / 60)
                     const tiempoTotalSegs = tiempoTotal % 60
                     const promedioPorLamina =
-                      np.cantidadLaminas > 0 ? Math.round(tiempoTotal / np.cantidadLaminas / 60) : 0
+                      np.cantidad_laminas > 0 ? Math.round(tiempoTotal / np.cantidad_laminas / 60) : 0
+
+                    const tiempoPausadoTotal = (np.tiempo_pausado_corte || 0) + (np.tiempo_pausado_enchape || 0)
+                    const tiempoPausadoMin = Math.floor(tiempoPausadoTotal / 60)
+                    const tiempoPausadoSegs = tiempoPausadoTotal % 60
 
                     return (
                       <Card key={np.id} className="border-l-4 border-l-green-500">
                         <CardContent className="p-4">
-                          <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
+                          <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-5">
                             <div>
                               <div className="flex items-center gap-2 mb-2">
                                 <Badge variant="outline" className="bg-green-500/10 text-green-600 border-green-500/20">
@@ -485,42 +530,50 @@ export function JefeVentasView() {
                                 </Badge>
                               </div>
                               <p className="text-sm font-medium">NP: {np.numero}</p>
-                              <p className="text-xs text-muted-foreground">Asesor: {np.asesorNombre}</p>
-                              <p className="text-xs text-muted-foreground">Cortador: {np.cortadorNombre || "N/A"}</p>
+                              <p className="text-xs text-muted-foreground">Asesor: {np.asesor_nombre}</p>
+                              <p className="text-xs text-muted-foreground">Cortador: {np.cortador_nombre || "N/A"}</p>
                             </div>
 
                             <div>
                               <p className="text-xs text-muted-foreground mb-1">Material y Cantidad</p>
-                              <p className="text-sm font-medium">{np.cantidadLaminas} láminas</p>
-                              <p className="text-xs">{np.tipoMaterial.toUpperCase()}</p>
-                              {np.llevaCanto && (
+                              <p className="text-sm font-medium">{np.cantidad_laminas} láminas</p>
+                              <p className="text-xs">{np.tipo_material?.toUpperCase()}</p>
+                              {np.lleva_canto && (
                                 <div className="text-xs text-muted-foreground mt-1">
-                                  {np.cantoRigido > 0 && <div>Rígido: {np.cantoRigido}m</div>}
-                                  {np.cantoFlexible > 0 && <div>Flexible: {np.cantoFlexible}m</div>}
+                                  {(np.canto_rigido || 0) > 0 && <div>Rígido: {np.canto_rigido}m</div>}
+                                  {(np.canto_flexible || 0) > 0 && <div>Flexible: {np.canto_flexible}m</div>}
                                 </div>
                               )}
                             </div>
 
                             <div>
                               <p className="text-xs text-muted-foreground mb-1">Tiempos Detallados</p>
-                              {np.tiempoCorte > 0 && (
+                              {(np.tiempo_corte || 0) > 0 && (
                                 <div className="text-xs">
                                   <span className="font-medium">Corte:</span> {tiempoCorteMin}:
                                   {tiempoCorteSegs.toString().padStart(2, "0")} min
                                 </div>
                               )}
-                              {np.tiempoEnchapeRigido > 0 && (
+                              {(np.tiempo_enchape_rigido || 0) > 0 && (
                                 <div className="text-xs">
                                   <span className="font-medium">Enchape Rígido:</span> {tiempoEnchapeRigidoMin}:
                                   {tiempoEnchapeRigidoSegs.toString().padStart(2, "0")} min
                                 </div>
                               )}
-                              {np.tiempoEnchapeFlexible > 0 && (
+                              {(np.tiempo_enchape_flexible || 0) > 0 && (
                                 <div className="text-xs">
                                   <span className="font-medium">Enchape Flexible:</span> {tiempoEnchapeFlexibleMin}:
                                   {tiempoEnchapeFlexibleSegs.toString().padStart(2, "0")} min
                                 </div>
                               )}
+                            </div>
+
+                            <div>
+                              <p className="text-xs text-muted-foreground mb-1">Tiempo Pausado</p>
+                              <p className="text-lg font-bold text-yellow-600">
+                                {tiempoPausadoMin}:{tiempoPausadoSegs.toString().padStart(2, "0")}
+                              </p>
+                              <p className="text-xs text-muted-foreground">minutos</p>
                             </div>
 
                             <div className="flex flex-col justify-center">
@@ -536,11 +589,11 @@ export function JefeVentasView() {
                             </div>
                           </div>
 
-                          {np.archivosPed && np.archivosPed.length > 0 && (
+                          {np.archivos_ped && np.archivos_ped.length > 0 && (
                             <div className="mt-3 pt-3 border-t">
                               <p className="text-xs text-muted-foreground mb-2">Archivos de Planos:</p>
                               <div className="flex flex-wrap gap-2">
-                                {np.archivosPed.map((archivo, idx) => (
+                                {np.archivos_ped.map((archivo: any, idx: number) => (
                                   <a
                                     key={idx}
                                     href={archivo.url}
@@ -574,7 +627,7 @@ export function JefeVentasView() {
               <CardTitle>Gestión de Planos Lepton (.ped)</CardTitle>
               <CardDescription>
                 Buscar y descargar archivos de planos por nota de pedido - Total:{" "}
-                {notasPedido.filter((np) => np.archivosPed && np.archivosPed.length > 0).length} notas con planos
+                {notasPedido.filter((np) => np.archivos_ped && np.archivos_ped.length > 0).length} notas con planos
               </CardDescription>
             </CardHeader>
             <CardContent>
@@ -616,10 +669,11 @@ export function JefeVentasView() {
                             <div>
                               <CardTitle className="text-lg">NP: {np.numero}</CardTitle>
                               <p className="text-sm text-muted-foreground mt-1">
-                                Asesor: {np.asesorNombre} • {format(np.fechaCreacion, "dd/MM/yyyy")}
+                                Asesor: {np.asesor_nombre} •{" "}
+                                {np.fecha_creacion && format(new Date(np.fecha_creacion), "dd/MM/yyyy")}
                               </p>
                               <p className="text-sm text-muted-foreground">
-                                Fecha de corte: {format(np.fechaCorte, "dd/MM/yyyy")}
+                                Fecha de corte: {format(new Date(np.fecha_corte), "dd/MM/yyyy")}
                               </p>
                             </div>
                             <div
@@ -639,22 +693,22 @@ export function JefeVentasView() {
                           <div className="grid grid-cols-2 gap-4 mb-4 text-sm">
                             <div>
                               <span className="text-muted-foreground">Láminas:</span>
-                              <span className="ml-2 font-medium">{np.cantidadLaminas}</span>
+                              <span className="ml-2 font-medium">{np.cantidad_laminas}</span>
                             </div>
                             <div>
                               <span className="text-muted-foreground">Material:</span>
-                              <span className="ml-2 font-medium">{np.tipoMaterial.toUpperCase()}</span>
+                              <span className="ml-2 font-medium">{np.tipo_material?.toUpperCase()}</span>
                             </div>
-                            {np.cantoRigido > 0 && (
+                            {(np.canto_rigido || 0) > 0 && (
                               <div>
                                 <span className="text-muted-foreground">Canto Rígido:</span>
-                                <span className="ml-2 font-medium">{np.cantoRigido}m</span>
+                                <span className="ml-2 font-medium">{np.canto_rigido}m</span>
                               </div>
                             )}
-                            {np.cantoFlexible > 0 && (
+                            {(np.canto_flexible || 0) > 0 && (
                               <div>
                                 <span className="text-muted-foreground">Canto Flexible:</span>
-                                <span className="ml-2 font-medium">{np.cantoFlexible}m</span>
+                                <span className="ml-2 font-medium">{np.canto_flexible}m</span>
                               </div>
                             )}
                           </div>
@@ -662,10 +716,10 @@ export function JefeVentasView() {
                           <div className="border-t pt-4">
                             <p className="text-sm font-medium mb-3 flex items-center">
                               <FileText className="h-4 w-4 mr-2 text-yellow-400" />
-                              Archivos .ped ({np.archivosPed?.length || 0})
+                              Archivos .ped ({np.archivos_ped?.length || 0})
                             </p>
                             <div className="space-y-2">
-                              {np.archivosPed?.map((archivo, idx) => (
+                              {np.archivos_ped?.map((archivo: any, idx: number) => (
                                 <div
                                   key={idx}
                                   className="flex items-center justify-between bg-muted/30 p-3 rounded-lg hover:bg-muted/50 transition-colors"
@@ -673,7 +727,8 @@ export function JefeVentasView() {
                                   <div className="flex-1 min-w-0 mr-4">
                                     <p className="text-sm font-medium truncate">{archivo.nombre}</p>
                                     <p className="text-xs text-muted-foreground">
-                                      Subido el {format(new Date(archivo.fechaSubida), "dd/MM/yyyy HH:mm")}
+                                      {archivo.fechaSubida &&
+                                        `Subido el ${format(new Date(archivo.fechaSubida), "dd/MM/yyyy HH:mm")}`}
                                     </p>
                                   </div>
                                   <Button
@@ -785,22 +840,29 @@ export function JefeVentasView() {
                       <div className="space-y-1">
                         <p className="font-medium">{usuario.nombre}</p>
                         <p className="text-sm text-muted-foreground">{usuario.email}</p>
-                        <Badge
-                          variant={usuario.role === "jefe_ventas" ? "default" : "secondary"}
-                          className={
-                            usuario.role === "cortador"
-                              ? "bg-blue-500"
-                              : usuario.role === "asesor_ventas"
-                                ? "bg-green-500"
-                                : ""
-                          }
-                        >
-                          {usuario.role === "jefe_ventas"
-                            ? "Jefe de Ventas"
-                            : usuario.role === "cortador"
-                              ? "Cortador"
-                              : "Asesor de Ventas"}
-                        </Badge>
+                        <div className="flex gap-2">
+                          <Badge
+                            variant={usuario.role === "jefe_ventas" ? "default" : "secondary"}
+                            className={
+                              usuario.role === "cortador"
+                                ? "bg-blue-500"
+                                : usuario.role === "asesor_ventas"
+                                  ? "bg-green-500"
+                                  : ""
+                            }
+                          >
+                            {usuario.role === "jefe_ventas"
+                              ? "Jefe de Ventas"
+                              : usuario.role === "cortador"
+                                ? "Cortador"
+                                : "Asesor de Ventas"}
+                          </Badge>
+                          {usuario.es_baseline && (
+                            <Badge variant="outline" className="bg-blue-500/10 text-blue-500 border-blue-500/20">
+                              Baseline
+                            </Badge>
+                          )}
+                        </div>
                       </div>
                       {usuario.role !== "jefe_ventas" && (
                         <Button
