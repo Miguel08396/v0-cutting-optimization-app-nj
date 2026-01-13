@@ -2,7 +2,7 @@
 
 import type React from "react"
 import { createContext, useContext, useState, useEffect } from "react"
-import { UserModel } from "./user-model"
+import { loginUser } from "@/lib/services/auth-service"
 
 export type UserRole = "cortador" | "jefe_ventas" | "asesor_ventas"
 
@@ -10,6 +10,7 @@ export interface User {
   id: string
   nombre: string
   role: UserRole
+  es_baseline?: boolean
 }
 
 interface AuthContextType {
@@ -17,38 +18,14 @@ interface AuthContextType {
   login: (email: string, password: string) => Promise<boolean>
   logout: () => void
   isAuthenticated: boolean
+  isLoading: boolean
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined)
 
-// Usuarios de ejemplo (en producción esto vendría de una base de datos)
-const MOCK_USERS = [
-  {
-    id: "1",
-    email: "cortador@cutmetrics.com",
-    password: "cortador123",
-    nombre: "Juan Pérez",
-    role: "cortador" as UserRole,
-  },
-  {
-    id: "2",
-    email: "jefe@cutmetrics.com",
-    password: "jefe123",
-    nombre: "María García",
-    role: "jefe_ventas" as UserRole,
-  },
-  {
-    id: "3",
-    email: "asesor@cutmetrics.com",
-    password: "asesor123",
-    nombre: "Carlos Rodríguez",
-    role: "asesor_ventas" as UserRole,
-  },
-]
-
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<User | null>(null)
-  const [userModel] = useState(() => UserModel.getInstance())
+  const [isLoading, setIsLoading] = useState(true)
 
   useEffect(() => {
     // Verificar si hay sesión guardada
@@ -56,23 +33,35 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     if (savedUser) {
       setUser(JSON.parse(savedUser))
     }
+    setIsLoading(false)
   }, [])
 
   const login = async (email: string, password: string): Promise<boolean> => {
-    const foundUser = userModel.obtenerUsuarioPorEmail(email)
+    try {
+      console.log("[v0] Intentando login con:", email)
 
-    console.log("[v0] Intentando login con:", email)
-    console.log("[v0] Usuario encontrado:", foundUser)
+      const result = await loginUser(email, password)
 
-    if (foundUser && foundUser.password === password) {
-      const userData = { id: foundUser.id, nombre: foundUser.nombre, role: foundUser.role }
+      if (!result.success || !result.user) {
+        console.log("[v0] Login fallido:", result.error)
+        return false
+      }
+
+      const userData: User = {
+        id: result.user.id,
+        nombre: result.user.nombre,
+        role: result.user.role as UserRole,
+        es_baseline: result.user.es_baseline,
+      }
+
       setUser(userData)
       localStorage.setItem("user_session", JSON.stringify(userData))
       console.log("[v0] Login exitoso")
       return true
+    } catch (err) {
+      console.error("[v0] Error en login:", err)
+      return false
     }
-    console.log("[v0] Login fallido")
-    return false
   }
 
   const logout = () => {
@@ -81,7 +70,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }
 
   return (
-    <AuthContext.Provider value={{ user, login, logout, isAuthenticated: !!user }}>{children}</AuthContext.Provider>
+    <AuthContext.Provider value={{ user, login, logout, isAuthenticated: !!user, isLoading }}>
+      {children}
+    </AuthContext.Provider>
   )
 }
 
