@@ -1,8 +1,8 @@
 "use client"
 
-import { useEffect, useState, useCallback } from "react"
+import { useEffect, useState, useCallback, useRef } from "react"
 import { createBrowserClient } from "@supabase/ssr"
-import type { RealtimeChannel, RealtimePostgresChangesPayload } from "@supabase/supabase-js"
+import type { RealtimeChannel } from "@supabase/supabase-js"
 
 // Cliente singleton para Supabase en el cliente
 let supabaseClient: ReturnType<typeof createBrowserClient> | null = null
@@ -28,51 +28,77 @@ interface UseRealtimeOptions<T> {
   onInsert?: (data: T) => void
   onUpdate?: (data: T) => void
   onDelete?: (data: T) => void
+  enabled?: boolean
 }
 
-// Hook genérico para suscripción a cambios en tiempo real
 export function useRealtimeSubscription<T extends { id: string }>({
   table,
   filter,
   onInsert,
   onUpdate,
   onDelete,
+  enabled = true,
 }: UseRealtimeOptions<T>) {
   const [isConnected, setIsConnected] = useState(false)
+  const [usePolling, setUsePolling] = useState(false)
+  const retryCount = useRef(0)
+  const maxRetries = 3
 
   useEffect(() => {
+    if (!enabled) return
+
     const supabase = getSupabaseClient()
-    let channel: RealtimeChannel
+    let channel: RealtimeChannel | null = null
 
     const setupSubscription = () => {
-      const channelName = filter ? `${table}_${filter.column}_${filter.value}` : `${table}_changes`
+      const channelName = filter
+        ? `${table}_${filter.column}_${filter.value}_${Date.now()}`
+        : `${table}_changes_${Date.now()}`
 
-      channel = supabase
-        .channel(channelName)
-        .on(
-          "postgres_changes",
-          {
-            event: "*",
-            schema: "public",
-            table: table,
-            filter: filter ? `${filter.column}=eq.${filter.value}` : undefined,
-          },
-          (payload: RealtimePostgresChangesPayload<T>) => {
-            console.log("[v0] Realtime event:", payload.eventType, table)
+      try {
+        channel = supabase
+          .channel(channelName)
+          .on(
+            "postgres_changes",
+            {
+              event: "*",
+              schema: "public",
+              table: table,
+              filter: filter ? `${filter.column}=eq.${filter.value}` : undefined,
+            },
+            (payload) => {
+              if (payload.eventType === "INSERT" && onInsert) {
+                onInsert(payload.new as T)
+              } else if (payload.eventType === "UPDATE" && onUpdate) {
+                onUpdate(payload.new as T)
+              } else if (payload.eventType === "DELETE" && onDelete) {
+                onDelete(payload.old as T)
+              }
+            },
+          )
+          .subscribe((status) => {
+            if (status === "SUBSCRIBED") {
+              setIsConnected(true)
+              retryCount.current = 0
+            } else if (status === "CHANNEL_ERROR" || status === "TIMED_OUT") {
+              setIsConnected(false)
+              retryCount.current++
 
-            if (payload.eventType === "INSERT" && onInsert) {
-              onInsert(payload.new as T)
-            } else if (payload.eventType === "UPDATE" && onUpdate) {
-              onUpdate(payload.new as T)
-            } else if (payload.eventType === "DELETE" && onDelete) {
-              onDelete(payload.old as T)
+              if (retryCount.current >= maxRetries) {
+                setUsePolling(true)
+                if (channel) {
+                  channel.unsubscribe()
+                }
+              }
+            } else if (status === "CLOSED") {
+              setIsConnected(false)
             }
-          },
-        )
-        .subscribe((status) => {
-          console.log("[v0] Realtime subscription status:", status)
-          setIsConnected(status === "SUBSCRIBED")
-        })
+          })
+      } catch (error) {
+        // Silently fall back to polling
+        setUsePolling(true)
+        setIsConnected(false)
+      }
     }
 
     setupSubscription()
@@ -82,18 +108,21 @@ export function useRealtimeSubscription<T extends { id: string }>({
         channel.unsubscribe()
       }
     }
-  }, [table, filter, onInsert, onUpdate, onDelete])
+  }, [table, filter, onInsert, onUpdate, onDelete, enabled])
 
-  return { isConnected }
+  return { isConnected, usePolling }
 }
 
-// Hook específico para notas de pedido con estado local
 export function useRealtimeNotas(initialNotas: any[] = []) {
   const [notas, setNotas] = useState(initialNotas)
   const [lastUpdate, setLastUpdate] = useState<Date | null>(null)
 
   const handleInsert = useCallback((newNota: any) => {
-    setNotas((prev) => [newNota, ...prev])
+    setNotas((prev) => {
+      // Evitar duplicados
+      if (prev.some((n) => n.id === newNota.id)) return prev
+      return [newNota, ...prev]
+    })
     setLastUpdate(new Date())
   }, [])
 
@@ -107,14 +136,13 @@ export function useRealtimeNotas(initialNotas: any[] = []) {
     setLastUpdate(new Date())
   }, [])
 
-  const { isConnected } = useRealtimeSubscription({
+  const { isConnected, usePolling } = useRealtimeSubscription({
     table: "notas_pedido",
     onInsert: handleInsert,
     onUpdate: handleUpdate,
     onDelete: handleDelete,
   })
 
-  // Función para actualizar manualmente las notas
   const refreshNotas = useCallback((newNotas: any[]) => {
     setNotas(newNotas)
   }, [])
@@ -122,12 +150,14 @@ export function useRealtimeNotas(initialNotas: any[] = []) {
   return {
     notas,
     isConnected,
+    displayConnected: isConnected || usePolling,
     lastUpdate,
     refreshNotas,
+    usePolling,
   }
 }
 
-// Hook específico para turnos de un cortador
+// Hook para turnos de un cortador
 export function useRealtimeTurnos(cortadorId: string, initialTurnos: any[] = []) {
   const [turnos, setTurnos] = useState(initialTurnos)
 
@@ -139,17 +169,17 @@ export function useRealtimeTurnos(cortadorId: string, initialTurnos: any[] = [])
     setTurnos((prev) => prev.map((turno) => (turno.id === updatedTurno.id ? updatedTurno : turno)))
   }, [])
 
-  const { isConnected } = useRealtimeSubscription({
+  const { isConnected, usePolling } = useRealtimeSubscription({
     table: "turnos",
     filter: { column: "cortador_id", value: cortadorId },
     onInsert: handleInsert,
     onUpdate: handleUpdate,
+    enabled: !!cortadorId,
   })
 
-  return { turnos, isConnected }
+  return { turnos, isConnected: isConnected || usePolling }
 }
 
-// Hook para detectar cambios en cualquier tabla (para dashboard)
 export function useRealtimeDashboard() {
   const [updateCount, setUpdateCount] = useState(0)
   const [lastUpdate, setLastUpdate] = useState<Date | null>(null)
@@ -159,17 +189,21 @@ export function useRealtimeDashboard() {
     setLastUpdate(new Date())
   }, [])
 
-  useRealtimeSubscription({
+  const { isConnected: notasConnected } = useRealtimeSubscription({
     table: "notas_pedido",
     onInsert: incrementUpdate,
     onUpdate: incrementUpdate,
   })
 
-  useRealtimeSubscription({
+  const { isConnected: turnosConnected } = useRealtimeSubscription({
     table: "turnos",
     onInsert: incrementUpdate,
     onUpdate: incrementUpdate,
   })
 
-  return { updateCount, lastUpdate }
+  return {
+    updateCount,
+    lastUpdate,
+    isConnected: notasConnected || turnosConnected,
+  }
 }

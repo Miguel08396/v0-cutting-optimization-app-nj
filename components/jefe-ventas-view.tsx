@@ -17,7 +17,19 @@ import {
   LineChart,
   Line,
 } from "recharts"
-import { Users, Clock, Target, AlertCircle, UserPlus, Trash2, FileText, Download, Wifi, WifiOff } from "lucide-react"
+import {
+  Users,
+  Clock,
+  Target,
+  AlertCircle,
+  UserPlus,
+  Trash2,
+  FileText,
+  Download,
+  Wifi,
+  WifiOff,
+  RefreshCw,
+} from "lucide-react"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -45,8 +57,8 @@ export function JefeVentasView() {
 
   const [busquedaNP, setBusquedaNP] = useState("")
 
-  const { notas, isConnected, refreshNotas } = useRealtimeNotas(notasPedidoData)
-  const { lastUpdate } = useRealtimeDashboard()
+  const { notas, displayConnected, refreshNotas, usePolling } = useRealtimeNotas(notasPedidoData)
+  const { lastUpdate, isConnected: dashboardConnected } = useRealtimeDashboard()
 
   // Cargar datos iniciales desde Supabase
   const cargarDatos = useCallback(async () => {
@@ -69,6 +81,15 @@ export function JefeVentasView() {
   useEffect(() => {
     cargarDatos()
   }, [cargarDatos])
+
+  useEffect(() => {
+    if (usePolling) {
+      const interval = setInterval(() => {
+        cargarDatos()
+      }, 30000)
+      return () => clearInterval(interval)
+    }
+  }, [usePolling, cargarDatos])
 
   // Recargar cuando haya actualizaciones realtime
   useEffect(() => {
@@ -217,7 +238,7 @@ export function JefeVentasView() {
       link.click()
       document.body.removeChild(link)
     } catch (error) {
-      console.error("[v0] Error al descargar plano:", error)
+      console.error("Error al descargar plano:", error)
     }
   }
 
@@ -240,17 +261,29 @@ export function JefeVentasView() {
           <p className="text-muted-foreground">Vista general del rendimiento del centro de corte</p>
         </div>
         <div className="flex items-center gap-2">
-          {isConnected ? (
+          {displayConnected || dashboardConnected ? (
             <Badge variant="outline" className="bg-green-500/10 text-green-500 border-green-500/20">
-              <Wifi className="h-3 w-3 mr-1" />
-              En vivo
+              {usePolling ? (
+                <>
+                  <RefreshCw className="h-3 w-3 mr-1" />
+                  Auto-refresh
+                </>
+              ) : (
+                <>
+                  <Wifi className="h-3 w-3 mr-1" />
+                  En vivo
+                </>
+              )}
             </Badge>
           ) : (
-            <Badge variant="outline" className="bg-yellow-500/10 text-yellow-500 border-yellow-500/20">
+            <Badge variant="outline" className="bg-muted text-muted-foreground border-muted">
               <WifiOff className="h-3 w-3 mr-1" />
-              Reconectando...
+              Offline
             </Badge>
           )}
+          <Button variant="outline" size="sm" onClick={cargarDatos}>
+            <RefreshCw className="h-4 w-4" />
+          </Button>
         </div>
       </div>
 
@@ -495,126 +528,46 @@ export function JefeVentasView() {
               </CardDescription>
             </CardHeader>
             <CardContent>
-              <div className="space-y-3 max-h-[600px] overflow-y-auto">
-                {cortesCompletados.length > 0 ? (
-                  cortesCompletados.map((np) => {
-                    const tiempoCorteMin = np.tiempo_corte ? Math.floor(np.tiempo_corte / 60) : 0
-                    const tiempoCorteSegs = np.tiempo_corte ? np.tiempo_corte % 60 : 0
-                    const tiempoEnchapeRigidoMin = np.tiempo_enchape_rigido
-                      ? Math.floor(np.tiempo_enchape_rigido / 60)
-                      : 0
-                    const tiempoEnchapeRigidoSegs = np.tiempo_enchape_rigido ? np.tiempo_enchape_rigido % 60 : 0
-                    const tiempoEnchapeFlexibleMin = np.tiempo_enchape_flexible
-                      ? Math.floor(np.tiempo_enchape_flexible / 60)
-                      : 0
-                    const tiempoEnchapeFlexibleSegs = np.tiempo_enchape_flexible ? np.tiempo_enchape_flexible % 60 : 0
-                    const tiempoTotal =
-                      (np.tiempo_corte || 0) + (np.tiempo_enchape_rigido || 0) + (np.tiempo_enchape_flexible || 0)
-                    const tiempoTotalMin = Math.floor(tiempoTotal / 60)
-                    const tiempoTotalSegs = tiempoTotal % 60
-                    const promedioPorLamina =
-                      np.cantidad_laminas > 0 ? Math.round(tiempoTotal / np.cantidad_laminas / 60) : 0
-
-                    const tiempoPausadoTotal = (np.tiempo_pausado_corte || 0) + (np.tiempo_pausado_enchape || 0)
-                    const tiempoPausadoMin = Math.floor(tiempoPausadoTotal / 60)
-                    const tiempoPausadoSegs = tiempoPausadoTotal % 60
-
-                    return (
-                      <Card key={np.id} className="border-l-4 border-l-green-500">
-                        <CardContent className="p-4">
-                          <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-5">
-                            <div>
-                              <div className="flex items-center gap-2 mb-2">
-                                <Badge variant="outline" className="bg-green-500/10 text-green-600 border-green-500/20">
-                                  {np.estado === "cerrado" ? "Cerrado" : "Completado"}
-                                </Badge>
-                              </div>
-                              <p className="text-sm font-medium">NP: {np.numero}</p>
-                              <p className="text-xs text-muted-foreground">Asesor: {np.asesor_nombre}</p>
-                              <p className="text-xs text-muted-foreground">Cortador: {np.cortador_nombre || "N/A"}</p>
-                            </div>
-
-                            <div>
-                              <p className="text-xs text-muted-foreground mb-1">Material y Cantidad</p>
-                              <p className="text-sm font-medium">{np.cantidad_laminas} láminas</p>
-                              <p className="text-xs">{np.tipo_material?.toUpperCase()}</p>
-                              {np.lleva_canto && (
-                                <div className="text-xs text-muted-foreground mt-1">
-                                  {(np.canto_rigido || 0) > 0 && <div>Rígido: {np.canto_rigido}m</div>}
-                                  {(np.canto_flexible || 0) > 0 && <div>Flexible: {np.canto_flexible}m</div>}
-                                </div>
-                              )}
-                            </div>
-
-                            <div>
-                              <p className="text-xs text-muted-foreground mb-1">Tiempos Detallados</p>
-                              {(np.tiempo_corte || 0) > 0 && (
-                                <div className="text-xs">
-                                  <span className="font-medium">Corte:</span> {tiempoCorteMin}:
-                                  {tiempoCorteSegs.toString().padStart(2, "0")} min
-                                </div>
-                              )}
-                              {(np.tiempo_enchape_rigido || 0) > 0 && (
-                                <div className="text-xs">
-                                  <span className="font-medium">Enchape Rígido:</span> {tiempoEnchapeRigidoMin}:
-                                  {tiempoEnchapeRigidoSegs.toString().padStart(2, "0")} min
-                                </div>
-                              )}
-                              {(np.tiempo_enchape_flexible || 0) > 0 && (
-                                <div className="text-xs">
-                                  <span className="font-medium">Enchape Flexible:</span> {tiempoEnchapeFlexibleMin}:
-                                  {tiempoEnchapeFlexibleSegs.toString().padStart(2, "0")} min
-                                </div>
-                              )}
-                            </div>
-
-                            <div>
-                              <p className="text-xs text-muted-foreground mb-1">Tiempo Pausado</p>
-                              <p className="text-lg font-bold text-yellow-600">
-                                {tiempoPausadoMin}:{tiempoPausadoSegs.toString().padStart(2, "0")}
-                              </p>
-                              <p className="text-xs text-muted-foreground">minutos</p>
-                            </div>
-
-                            <div className="flex flex-col justify-center">
-                              <div className="text-center p-3 bg-primary/10 rounded-lg">
-                                <p className="text-xs text-muted-foreground mb-1">Tiempo Total</p>
-                                <p className="text-2xl font-bold text-primary">
-                                  {tiempoTotalMin}:{tiempoTotalSegs.toString().padStart(2, "0")}
-                                </p>
-                                <p className="text-xs text-muted-foreground mt-1">
-                                  Promedio: {promedioPorLamina} min/lámina
-                                </p>
-                              </div>
-                            </div>
-                          </div>
-
-                          {np.archivos_ped && np.archivos_ped.length > 0 && (
-                            <div className="mt-3 pt-3 border-t">
-                              <p className="text-xs text-muted-foreground mb-2">Archivos de Planos:</p>
-                              <div className="flex flex-wrap gap-2">
-                                {np.archivos_ped.map((archivo: any, idx: number) => (
-                                  <a
-                                    key={idx}
-                                    href={archivo.url}
-                                    download={archivo.nombre}
-                                    className="text-xs bg-secondary hover:bg-secondary/80 px-3 py-1 rounded-md transition-colors"
-                                  >
-                                    {archivo.nombre}
-                                  </a>
-                                ))}
-                              </div>
-                            </div>
-                          )}
-                        </CardContent>
-                      </Card>
-                    )
-                  })
-                ) : (
-                  <div className="text-center py-12 text-muted-foreground">
-                    <Clock className="h-12 w-12 mx-auto mb-3 opacity-50" />
-                    <p>No hay notas terminadas aún</p>
-                  </div>
+              <div className="max-h-96 overflow-auto">
+                <table className="w-full">
+                  <thead className="sticky top-0 bg-card">
+                    <tr className="border-b">
+                      <th className="text-left p-2 font-medium">NP</th>
+                      <th className="text-left p-2 font-medium">Cliente</th>
+                      <th className="text-left p-2 font-medium">Cortador</th>
+                      <th className="text-right p-2 font-medium">Láminas</th>
+                      <th className="text-right p-2 font-medium">T. Corte</th>
+                      <th className="text-right p-2 font-medium">T. Enchape</th>
+                      <th className="text-right p-2 font-medium">T. Pausado</th>
+                      <th className="text-right p-2 font-medium">Total</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {cortesCompletados.slice(0, 20).map((np) => {
+                      const tiempoTotal =
+                        (np.tiempo_corte || 0) + (np.tiempo_enchape_rigido || 0) + (np.tiempo_enchape_flexible || 0)
+                      const tiempoPausado = (np.tiempo_pausado_corte || 0) + (np.tiempo_pausado_enchape || 0)
+                      return (
+                        <tr key={np.id} className="border-b hover:bg-muted/50">
+                          <td className="p-2 font-mono text-sm">{np.numero}</td>
+                          <td className="p-2 text-sm">{np.cliente}</td>
+                          <td className="p-2 text-sm">{np.cortador_nombre || "-"}</td>
+                          <td className="p-2 text-right text-sm">{np.cantidad_laminas || 1}</td>
+                          <td className="p-2 text-right text-sm">{Math.round((np.tiempo_corte || 0) / 60)} min</td>
+                          <td className="p-2 text-right text-sm">
+                            {Math.round(((np.tiempo_enchape_rigido || 0) + (np.tiempo_enchape_flexible || 0)) / 60)} min
+                          </td>
+                          <td className="p-2 text-right text-sm text-yellow-600">
+                            {Math.round(tiempoPausado / 60)} min
+                          </td>
+                          <td className="p-2 text-right text-sm font-medium">{Math.round(tiempoTotal / 60)} min</td>
+                        </tr>
+                      )
+                    })}
+                  </tbody>
+                </table>
+                {cortesCompletados.length === 0 && (
+                  <div className="text-center py-4 text-muted-foreground">No hay notas completadas</div>
                 )}
               </div>
             </CardContent>
@@ -624,129 +577,67 @@ export function JefeVentasView() {
         <TabsContent value="planos" className="space-y-4">
           <Card>
             <CardHeader>
-              <CardTitle>Gestión de Planos Lepton (.ped)</CardTitle>
-              <CardDescription>
-                Buscar y descargar archivos de planos por nota de pedido - Total:{" "}
-                {notasPedido.filter((np) => np.archivos_ped && np.archivos_ped.length > 0).length} notas con planos
-              </CardDescription>
+              <CardTitle className="flex items-center gap-2">
+                <FileText className="h-5 w-5" />
+                Planos de Notas de Pedido
+              </CardTitle>
+              <CardDescription>Visualización y descarga de archivos .ped subidos por los asesores</CardDescription>
+              <div className="mt-4">
+                <Input
+                  placeholder="Buscar por número de NP..."
+                  value={busquedaNP}
+                  onChange={(e) => setBusquedaNP(e.target.value)}
+                  className="max-w-sm"
+                />
+              </div>
             </CardHeader>
             <CardContent>
               <div className="space-y-4">
-                <div className="flex gap-2">
-                  <Input
-                    placeholder="Buscar por número de NP..."
-                    className="flex-1"
-                    value={busquedaNP}
-                    onChange={(e) => setBusquedaNP(e.target.value)}
-                  />
-                  <Button variant="outline" onClick={() => setBusquedaNP("")}>
-                    Limpiar
-                  </Button>
-                </div>
-
-                {notasConPlanos.length === 0 && (
-                  <div className="text-center py-12">
-                    <FileText className="mx-auto h-16 w-16 text-muted-foreground mb-4" />
-                    <p className="text-lg text-muted-foreground">
-                      {busquedaNP.trim()
-                        ? `No se encontraron planos para la NP: ${busquedaNP}`
-                        : "No hay notas de pedido con planos cargados"}
-                    </p>
-                    <p className="text-sm text-muted-foreground mt-2">
-                      {busquedaNP.trim()
-                        ? "Verifica el número de nota de pedido"
-                        : "Los asesores pueden cargar archivos .ped al crear las notas"}
-                    </p>
+                {notasConPlanos.length === 0 ? (
+                  <div className="text-center py-8 text-muted-foreground">
+                    {busquedaNP ? "No se encontraron planos con ese número de NP" : "No hay planos cargados aún"}
                   </div>
-                )}
-
-                {notasConPlanos.length > 0 && (
-                  <div className="grid gap-4">
-                    {notasConPlanos.map((np) => (
-                      <Card key={np.id} className="border-yellow-600/20">
-                        <CardHeader className="pb-3">
-                          <div className="flex items-start justify-between">
-                            <div>
-                              <CardTitle className="text-lg">NP: {np.numero}</CardTitle>
-                              <p className="text-sm text-muted-foreground mt-1">
-                                Asesor: {np.asesor_nombre} •{" "}
-                                {np.fecha_creacion && format(new Date(np.fecha_creacion), "dd/MM/yyyy")}
-                              </p>
-                              <p className="text-sm text-muted-foreground">
-                                Fecha de corte: {format(new Date(np.fecha_corte), "dd/MM/yyyy")}
-                              </p>
+                ) : (
+                  notasConPlanos.map((np) => (
+                    <div key={np.id} className="border rounded-lg p-4">
+                      <div className="flex items-center justify-between mb-3">
+                        <div>
+                          <span className="font-mono font-bold text-primary">{np.numero}</span>
+                          <span className="mx-2">-</span>
+                          <span>{np.cliente}</span>
+                        </div>
+                        <Badge
+                          variant={np.estado === "completado" || np.estado === "cerrado" ? "default" : "secondary"}
+                        >
+                          {np.estado}
+                        </Badge>
+                      </div>
+                      <div className="grid gap-2">
+                        {np.archivos_ped?.map((archivo, index) => (
+                          <div key={index} className="flex items-center justify-between bg-muted/50 rounded p-2">
+                            <div className="flex items-center gap-2">
+                              <FileText className="h-4 w-4 text-muted-foreground" />
+                              <span className="text-sm">{archivo.nombre}</span>
+                              {archivo.fechaSubida && (
+                                <span className="text-xs text-muted-foreground">
+                                  ({format(new Date(archivo.fechaSubida), "dd/MM/yyyy HH:mm")})
+                                </span>
+                              )}
                             </div>
-                            <div
-                              className={`px-2 py-1 rounded-full text-xs font-medium ${
-                                np.estado === "completado" || np.estado === "cerrado"
-                                  ? "bg-green-500/20 text-green-400"
-                                  : np.estado === "en_corte" || np.estado === "en_enchape"
-                                    ? "bg-yellow-500/20 text-yellow-400"
-                                    : "bg-blue-500/20 text-blue-400"
-                              }`}
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              onClick={() => descargarPlano(archivo)}
+                              className="flex items-center gap-1"
                             >
-                              {np.estado.toUpperCase().replace("_", " ")}
-                            </div>
+                              <Download className="h-3 w-3" />
+                              Descargar
+                            </Button>
                           </div>
-                        </CardHeader>
-                        <CardContent>
-                          <div className="grid grid-cols-2 gap-4 mb-4 text-sm">
-                            <div>
-                              <span className="text-muted-foreground">Láminas:</span>
-                              <span className="ml-2 font-medium">{np.cantidad_laminas}</span>
-                            </div>
-                            <div>
-                              <span className="text-muted-foreground">Material:</span>
-                              <span className="ml-2 font-medium">{np.tipo_material?.toUpperCase()}</span>
-                            </div>
-                            {(np.canto_rigido || 0) > 0 && (
-                              <div>
-                                <span className="text-muted-foreground">Canto Rígido:</span>
-                                <span className="ml-2 font-medium">{np.canto_rigido}m</span>
-                              </div>
-                            )}
-                            {(np.canto_flexible || 0) > 0 && (
-                              <div>
-                                <span className="text-muted-foreground">Canto Flexible:</span>
-                                <span className="ml-2 font-medium">{np.canto_flexible}m</span>
-                              </div>
-                            )}
-                          </div>
-
-                          <div className="border-t pt-4">
-                            <p className="text-sm font-medium mb-3 flex items-center">
-                              <FileText className="h-4 w-4 mr-2 text-yellow-400" />
-                              Archivos .ped ({np.archivos_ped?.length || 0})
-                            </p>
-                            <div className="space-y-2">
-                              {np.archivos_ped?.map((archivo: any, idx: number) => (
-                                <div
-                                  key={idx}
-                                  className="flex items-center justify-between bg-muted/30 p-3 rounded-lg hover:bg-muted/50 transition-colors"
-                                >
-                                  <div className="flex-1 min-w-0 mr-4">
-                                    <p className="text-sm font-medium truncate">{archivo.nombre}</p>
-                                    <p className="text-xs text-muted-foreground">
-                                      {archivo.fechaSubida &&
-                                        `Subido el ${format(new Date(archivo.fechaSubida), "dd/MM/yyyy HH:mm")}`}
-                                    </p>
-                                  </div>
-                                  <Button
-                                    onClick={() => descargarPlano(archivo)}
-                                    className="bg-yellow-600 hover:bg-yellow-500 text-black"
-                                    size="sm"
-                                  >
-                                    <Download className="h-4 w-4 mr-2" />
-                                    Descargar
-                                  </Button>
-                                </div>
-                              ))}
-                            </div>
-                          </div>
-                        </CardContent>
-                      </Card>
-                    ))}
-                  </div>
+                        ))}
+                      </div>
+                    </div>
+                  ))
                 )}
               </div>
             </CardContent>
@@ -754,48 +645,44 @@ export function JefeVentasView() {
         </TabsContent>
 
         <TabsContent value="usuarios" className="space-y-4">
-          <div className="grid gap-4 lg:grid-cols-2">
+          <div className="grid gap-4 md:grid-cols-2">
             <Card>
               <CardHeader>
                 <CardTitle className="flex items-center gap-2">
                   <UserPlus className="h-5 w-5" />
                   Crear Nuevo Usuario
                 </CardTitle>
-                <CardDescription>Agregar cortadores o asesores de ventas al sistema</CardDescription>
               </CardHeader>
               <CardContent className="space-y-4">
                 <div className="space-y-2">
                   <Label htmlFor="nombre">Nombre Completo</Label>
                   <Input
                     id="nombre"
-                    placeholder="Juan Pérez"
                     value={nuevoUsuario.nombre}
                     onChange={(e) => setNuevoUsuario({ ...nuevoUsuario, nombre: e.target.value })}
+                    placeholder="Ej: Juan Pérez"
                   />
                 </div>
-
                 <div className="space-y-2">
-                  <Label htmlFor="email">Email</Label>
+                  <Label htmlFor="email">Correo Electrónico</Label>
                   <Input
                     id="email"
                     type="email"
-                    placeholder="juan@mosquera.com"
                     value={nuevoUsuario.email}
                     onChange={(e) => setNuevoUsuario({ ...nuevoUsuario, email: e.target.value })}
+                    placeholder="Ej: juan@empresa.com"
                   />
                 </div>
-
                 <div className="space-y-2">
                   <Label htmlFor="password">Contraseña</Label>
                   <Input
                     id="password"
                     type="password"
-                    placeholder="••••••••"
                     value={nuevoUsuario.password}
                     onChange={(e) => setNuevoUsuario({ ...nuevoUsuario, password: e.target.value })}
+                    placeholder="Mínimo 6 caracteres"
                   />
                 </div>
-
                 <div className="space-y-2">
                   <Label htmlFor="role">Rol</Label>
                   <Select
@@ -804,7 +691,7 @@ export function JefeVentasView() {
                       setNuevoUsuario({ ...nuevoUsuario, role: value })
                     }
                   >
-                    <SelectTrigger id="role">
+                    <SelectTrigger>
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
@@ -814,9 +701,7 @@ export function JefeVentasView() {
                     </SelectContent>
                   </Select>
                 </div>
-
                 <Button onClick={handleCrearUsuario} className="w-full">
-                  <UserPlus className="mr-2 h-4 w-4" />
                   Crear Usuario
                 </Button>
               </CardContent>
@@ -824,58 +709,37 @@ export function JefeVentasView() {
 
             <Card>
               <CardHeader>
-                <CardTitle className="flex items-center gap-2">
-                  <Users className="h-5 w-5" />
-                  Usuarios Registrados
-                </CardTitle>
-                <CardDescription>Total: {usuarios.length} usuarios</CardDescription>
+                <CardTitle>Usuarios Registrados</CardTitle>
+                <CardDescription>Lista de usuarios activos en el sistema</CardDescription>
               </CardHeader>
               <CardContent>
-                <div className="space-y-3 max-h-96 overflow-y-auto">
-                  {usuarios.map((usuario) => (
-                    <div
-                      key={usuario.id}
-                      className="flex items-center justify-between p-3 rounded-lg border border-border hover:bg-accent/50 transition-colors"
-                    >
-                      <div className="space-y-1">
-                        <p className="font-medium">{usuario.nombre}</p>
-                        <p className="text-sm text-muted-foreground">{usuario.email}</p>
-                        <div className="flex gap-2">
-                          <Badge
-                            variant={usuario.role === "jefe_ventas" ? "default" : "secondary"}
-                            className={
-                              usuario.role === "cortador"
-                                ? "bg-blue-500"
-                                : usuario.role === "asesor_ventas"
-                                  ? "bg-green-500"
-                                  : ""
-                            }
-                          >
-                            {usuario.role === "jefe_ventas"
+                <div className="space-y-2 max-h-80 overflow-auto">
+                  {usuarios.map((u) => (
+                    <div key={u.id} className="flex items-center justify-between p-3 bg-muted/50 rounded-lg">
+                      <div>
+                        <p className="font-medium">{u.nombre}</p>
+                        <p className="text-xs text-muted-foreground">{u.email}</p>
+                        <Badge variant="outline" className="mt-1 text-xs">
+                          {u.role === "cortador"
+                            ? "Cortador"
+                            : u.role === "jefe_ventas"
                               ? "Jefe de Ventas"
-                              : usuario.role === "cortador"
-                                ? "Cortador"
-                                : "Asesor de Ventas"}
-                          </Badge>
-                          {usuario.es_baseline && (
-                            <Badge variant="outline" className="bg-blue-500/10 text-blue-500 border-blue-500/20">
-                              Baseline
-                            </Badge>
-                          )}
-                        </div>
+                              : "Asesor de Ventas"}
+                        </Badge>
                       </div>
-                      {usuario.role !== "jefe_ventas" && (
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          onClick={() => handleEliminarUsuario(usuario.id)}
-                          className="text-destructive hover:text-destructive hover:bg-destructive/10"
-                        >
-                          <Trash2 className="h-4 w-4" />
-                        </Button>
-                      )}
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="text-destructive hover:text-destructive"
+                        onClick={() => handleEliminarUsuario(u.id)}
+                      >
+                        <Trash2 className="h-4 w-4" />
+                      </Button>
                     </div>
                   ))}
+                  {usuarios.length === 0 && (
+                    <div className="text-center py-4 text-muted-foreground">No hay usuarios registrados</div>
+                  )}
                 </div>
               </CardContent>
             </Card>
