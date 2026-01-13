@@ -99,3 +99,11 @@ export interface Pausa {
   duracion: number | null
   motivo: string | null
 }
+
+export interface LaminaDetalle {
+  id: string
+  nota_id: string
+  tipo_material: "aglomerado" | "crudo" | "mdf"
+  cantidad: number
+  fecha_creacion: string
+}

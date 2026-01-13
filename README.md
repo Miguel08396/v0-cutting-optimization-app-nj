@@ -1,107 +1,136 @@
-# Centro de Corte Mosquera - Sistema de Gestión
+# Centro de Corte Mosquera - Sistema de Gestion
 
-Sistema integral para la gestión y medición de rendimiento del Centro de Corte de Homecenter Mosquera.
+Sistema integral para la gestion y medicion de rendimiento del Centro de Corte de Homecenter Mosquera.
 
-## Características Principales
+## Caracteristicas Principales
 
-### 🔧 Módulos del Sistema
+### Modulos del Sistema
 
-#### 1. **Módulo del Asesor de Ventas**
-- Creación de Notas de Pedido (NP)
-- Programación de fechas de corte
-- Especificación de materiales (Aglomerado, Crudo, MDF)
-- Registro de cantos (Flexible y Rígido) en metros enteros
-- Visualización y seguimiento de NPs creadas
+#### 1. **Modulo del Asesor de Ventas**
+- Creacion de Notas de Pedido (NP) con **multiples materiales**
+- Programacion de fechas de corte
+- Especificacion de materiales (Aglomerado, Crudo, MDF) - ahora con soporte para combinar varios
+- Registro de cantos (Flexible y Rigido) en metros enteros
+- Carga de archivos .ped de Lepton
+- Visualizacion y seguimiento de NPs creadas
 - Cierre de NPs completadas
 
-#### 2. **Módulo del Cortador**
-- Visualización de NPs pendientes organizadas por fecha
-- Selección de trabajos a ejecutar
-- **Sierra Striebig:** Control de corte con cronómetros individuales por lámina
-  - Botones: Iniciar, Pausar, Finalizar
-  - Registro automático de tiempos
-- **Enchapadora Fravol:** Control de enchape separado para rígido y flexible
-  - Cronómetros independientes
-  - Pausas y reanudaciones
-- Flujo automático: Corte → Enchape (si aplica)
+#### 2. **Modulo del Cortador**
+- **Sistema de Turnos:** Inicio/fin de turno con calculo de tiempo activo, pausado y muerto
+- Visualizacion de NPs pendientes organizadas por fecha
+- **Panel compartido:** Cortador 1 y Cortador 2 ven las mismas notas
+- Seleccion de trabajos a ejecutar
+- **Sierra Striebig:** Control de corte con cronometros individuales por lamina
+  - Botones: Iniciar, Pausar, Continuar, Finalizar
+  - Registro automatico de tiempos activos y pausados
+- **Enchapadora Fravol:** Control de enchape separado para rigido y flexible
+  - Cronometros independientes con tracking de pausas
+- Flujo automatico: Corte → Enchape (si aplica)
 
-#### 3. **Módulo del Jefe de Ventas**
+#### 3. **Modulo del Jefe de Ventas**
 - Dashboard completo con KPIs en tiempo real
-- Gráficas de rendimiento por cortador
-- Distribución de uso de máquinas
-- Tendencias de productividad (últimos 7 días)
-- Análisis de notas de pedido por asesor
-- **Gestión de Usuarios:** Crear y administrar cortadores y asesores
+- **Indicador de conexion en vivo** (Supabase Realtime)
+- Graficas de rendimiento por cortador
+- **Grafica de tiempo pausado** por cortador
+- Distribucion de uso de maquinas
+- Tendencias de productividad (ultimos 7 dias)
+- Analisis de notas de pedido
+- Descarga de planos .ped
+- **Gestion de Usuarios:** Crear y administrar cortadores y asesores
 
-## 🎨 Diseño
+#### 4. **Sistema Baseline** (Nuevo)
+- Usuario especial para establecer metricas de referencia
+- Los tiempos registrados como baseline se usan para comparar rendimiento
+- Comparacion automatica de cortadores vs tiempo de referencia
+
+## Diseno
 
 - **Colores corporativos:** Amarillo (#FFEB3B) y Negro (#1E1E1E) de Homecenter
 - **Logo oficial:** Centro de Corte Mosquera integrado
-- **Responsive:** Funciona perfectamente en móvil y PC
-- **Interfaz intuitiva:** Diseño limpio y fácil de usar
+- **Responsive:** Funciona perfectamente en movil y PC
+- **Interfaz intuitiva:** Diseno limpio y facil de usar
 
-## 🔒 Seguridad
+## Seguridad
 
-- **Autenticación robusta** con control de sesiones
-- **Límite de intentos:** Máximo 3 intentos de login antes de bloqueo temporal
+- **Autenticacion robusta** con control de sesiones
+- **Limite de intentos:** Maximo 3 intentos de login antes de bloqueo temporal
 - **Roles y permisos** bien definidos
-- **Persistencia de datos** en localStorage
-- **Validación de formularios** en todos los módulos
+- **Persistencia de datos** en Supabase (base de datos en la nube)
+- **Datos sincronizados** entre dispositivos
 
-## 📊 Métricas y Reportes
+## Metricas y Reportes
 
-- Cortes del día y totales
-- Tiempo promedio por trabajo
+- Cortes del dia y totales
+- **Tiempo promedio activo** por trabajo
+- **Tiempo promedio pausado** por trabajo
+- **Tiempo muerto del turno** (8 horas - activo - pausado)
 - NPs pendientes vs completadas
 - Cortadores activos
 - Rendimiento individual de cada cortador
-- Distribución de uso entre sierra y enchapadora
+- **Comparacion vs baseline**
+- Distribucion de uso entre sierra y enchapadora
 - Tendencias semanales de productividad
-- Estados de notas de pedido
 
-## 🚀 Flujo de Trabajo
+## Flujo de Trabajo
 
-1. **Asesor de Ventas** programa una NP con todos los detalles
-2. **Sistema** registra la NP y la hace visible para cortadores
-3. **Cortador** selecciona la NP y ejecuta el corte con cronómetro
-4. **Sistema** habilita automáticamente el enchape si es necesario
-5. **Cortador** finaliza el enchape
-6. **Asesor de Ventas** cierra la NP como terminada
-7. **Jefe de Ventas** visualiza todas las métricas y rendimientos
+1. **Asesor de Ventas** programa una NP con todos los detalles (multiples materiales)
+2. **Sistema** registra la NP en Supabase y la hace visible para cortadores
+3. **Cortador** inicia turno e indica que comienza su jornada
+4. **Cortador** selecciona la NP y ejecuta el corte con cronometro
+5. **Sistema** registra tiempo activo y tiempo pausado por separado
+6. **Sistema** habilita automaticamente el enchape si es necesario
+7. **Cortador** finaliza el enchape
+8. **Cortador** finaliza turno - sistema calcula tiempo muerto
+9. **Asesor de Ventas** cierra la NP como terminada
+10. **Jefe de Ventas** visualiza todas las metricas y rendimientos
 
-## 💻 Tecnologías
+## Tecnologias
 
 - **Framework:** Next.js 16 con React 19
+- **Base de Datos:** Supabase (PostgreSQL)
+- **Realtime:** Supabase Realtime para actualizaciones en vivo
 - **UI Components:** shadcn/ui con Tailwind CSS v4
-- **Gráficas:** Recharts
-- **Gestión de Estado:** React Hooks + Context API
-- **Persistencia:** localStorage (navegador)
+- **Graficas:** Recharts
+- **Gestion de Estado:** React Hooks + Context API
 - **Tipado:** TypeScript
 
-## 📝 Credenciales de Acceso
+## Credenciales de Acceso
 
 Ver archivo `CREDENCIALES.md` para los usuarios de prueba.
 
-## 🏗️ Arquitectura
+## Arquitectura
 
-El sistema utiliza el patrón **Modelo-Vista-Controlador (MVC)**:
+El sistema utiliza una arquitectura por capas:
 
-- **Modelos:** `nota-pedido-model.ts`, `corte-model.ts`, `user-model.ts`
-- **Controladores:** `nota-pedido-controller.ts`, `corte-controller.ts`
-- **Vistas:** Componentes React en `components/`
+- **Base de Datos:** Supabase (PostgreSQL)
+- **Servicios:** `/lib/services/` - Logica de negocio
+- **Tipos:** `/lib/supabase/types.ts` - Definiciones TypeScript
+- **Hooks:** `/lib/hooks/` - Hooks personalizados (Realtime, etc.)
+- **Vistas:** Componentes React en `/components/`
 
-## 👨‍💻 Desarrollo
+## Tablas de Base de Datos
+
+- `usuarios` - Usuarios del sistema con campo `es_baseline`
+- `notas_pedido` - Notas de pedido con tiempos activos y pausados
+- `laminas_detalle` - Detalle de laminas por material (nuevo)
+- `registros_corte` - Registro individual por lamina
+- `registros_enchape` - Registro de enchapes
+- `turnos` - Turnos de trabajo con tiempo activo, pausado y muerto
+- `pausas` - Registro detallado de pausas
+- `metricas_baseline` - Metricas de referencia
+
+## Desarrollo
 
 **Autor:** Miguel Angel Pardo  
 **Cliente:** Centro de Corte Mosquera - Homecenter  
-**Año:** 2025
+**Ano:** 2025-2026
 
-## 📄 Licencia
+## Licencia
 
-© 2025 Miguel Angel Pardo. Todos los derechos reservados.  
+© 2025-2026 Miguel Angel Pardo. Todos los derechos reservados.  
 Sistema desarrollado exclusivamente para Centro de Corte Mosquera - Homecenter.
 
 ---
 
-**Versión:** 1.0.0  
-**Última actualización:** Diciembre 2025
+**Version:** 2.0.0  
+**Ultima actualizacion:** Enero 2026

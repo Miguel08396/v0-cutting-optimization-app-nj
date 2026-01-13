@@ -4,44 +4,81 @@ import type React from "react"
 
 import { Calendar } from "@/components/ui/calendar"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
-import { useState, useEffect } from "react"
+import { useState, useEffect, useCallback } from "react"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Badge } from "@/components/ui/badge"
-import { Save, CheckCircle2, FileText, CalendarIcon, Upload, Download, Clock } from "lucide-react"
+import { Save, CheckCircle2, FileText, CalendarIcon, Upload, Download, Clock, Plus, Trash2 } from "lucide-react"
 import { useAuth } from "@/lib/auth-context"
-import { NotaPedidoController } from "@/lib/nota-pedido-controller"
-import type { NotaPedido } from "@/lib/nota-pedido-model"
+import { createClient } from "@/lib/supabase/client"
+import type { NotaPedido } from "@/lib/supabase/types"
 import { format } from "date-fns"
 import { es } from "date-fns/locale"
 
+interface MaterialEntry {
+  id: string
+  tipo: "aglomerado" | "crudo" | "mdf"
+  cantidad: number
+}
+
 export function AsesorVentasView() {
   const { user } = useAuth()
-  const [controller] = useState(() => new NotaPedidoController())
+  const supabase = createClient()
 
   const [fechaCorte, setFechaCorte] = useState<Date>(new Date())
   const [numeroNP, setNumeroNP] = useState("")
-  const [cantidadLaminas, setCantidadLaminas] = useState(1)
-  const [tipoMaterial, setTipoMaterial] = useState<"aglomerado" | "crudo" | "mdf">("aglomerado")
+  const [materiales, setMateriales] = useState<MaterialEntry[]>([
+    { id: crypto.randomUUID(), tipo: "aglomerado", cantidad: 1 },
+  ])
   const [llevaCanto, setLlevaCanto] = useState(false)
   const [cantoFlexible, setCantoFlexible] = useState(0)
   const [cantoRigido, setCantoRigido] = useState(0)
   const [guardadoExitoso, setGuardadoExitoso] = useState(false)
+  const [isLoading, setIsLoading] = useState(false)
 
   const [archivosPed, setArchivosPed] = useState<File[]>([])
 
   const [notasPedido, setNotasPedido] = useState<NotaPedido[]>([])
   const [diaSeleccionado, setDiaSeleccionado] = useState<string>("todos")
 
-  useEffect(() => {
-    if (user) {
-      const notas = controller.obtenerNotasPorAsesor(user.id)
-      setNotasPedido(notas)
+  const cargarNotas = useCallback(async () => {
+    if (!user) return
+
+    const { data, error } = await supabase
+      .from("notas_pedido")
+      .select("*")
+      .eq("asesor_id", user.id)
+      .order("fecha_creacion", { ascending: false })
+
+    if (!error && data) {
+      setNotasPedido(data as NotaPedido[])
     }
-  }, [user, controller])
+  }, [supabase, user])
+
+  useEffect(() => {
+    cargarNotas()
+  }, [cargarNotas])
+
+  const handleAgregarMaterial = () => {
+    setMateriales((prev) => [...prev, { id: crypto.randomUUID(), tipo: "aglomerado", cantidad: 1 }])
+  }
+
+  const handleEliminarMaterial = (id: string) => {
+    if (materiales.length > 1) {
+      setMateriales((prev) => prev.filter((m) => m.id !== id))
+    }
+  }
+
+  const handleCambiarMaterial = (id: string, campo: "tipo" | "cantidad", valor: string | number) => {
+    setMateriales((prev) =>
+      prev.map((m) => (m.id === id ? { ...m, [campo]: campo === "cantidad" ? Number(valor) || 1 : valor } : m)),
+    )
+  }
+
+  const cantidadTotalLaminas = materiales.reduce((sum, m) => sum + m.cantidad, 0)
 
   const handleCargarArchivos = (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(e.target.files || [])
@@ -55,67 +92,91 @@ export function AsesorVentasView() {
 
   const handleGuardarNP = async () => {
     if (!user || !numeroNP) return
+    setIsLoading(true)
 
-    console.log("[v0] Guardando NP con", archivosPed.length, "archivos .ped") // Debug log
+    try {
+      // Convertir archivos a base64
+      const archivosConvertidos = await Promise.all(
+        archivosPed.map(async (file) => {
+          const reader = new FileReader()
+          return new Promise<{ nombre: string; url: string; fechaSubida: string }>((resolve) => {
+            reader.onload = () => {
+              resolve({
+                nombre: file.name,
+                url: reader.result as string,
+                fechaSubida: new Date().toISOString(),
+              })
+            }
+            reader.readAsDataURL(file)
+          })
+        }),
+      )
 
-    const archivosConvertidos = await Promise.all(
-      archivosPed.map(async (file) => {
-        const reader = new FileReader()
-        return new Promise<{ nombre: string; url: string; fechaSubida: Date }>((resolve) => {
-          reader.onload = () => {
-            console.log("[v0] Archivo convertido:", file.name) // Debug log
-            resolve({
-              nombre: file.name,
-              url: reader.result as string,
-              fechaSubida: new Date(),
-            })
-          }
-          reader.readAsDataURL(file)
+      // Determinar el tipo de material principal (el de mayor cantidad)
+      const materialPrincipal = materiales.reduce((prev, curr) => (curr.cantidad > prev.cantidad ? curr : prev))
+
+      // Crear nota en Supabase
+      const { data: nuevaNota, error: errorNota } = await supabase
+        .from("notas_pedido")
+        .insert({
+          numero: numeroNP,
+          asesor_id: user.id,
+          asesor_nombre: user.nombre,
+          fecha_corte: fechaCorte.toISOString(),
+          cantidad_laminas: cantidadTotalLaminas,
+          tipo_material: materialPrincipal.tipo,
+          lleva_canto: llevaCanto,
+          canto_flexible: llevaCanto ? cantoFlexible : 0,
+          canto_rigido: llevaCanto ? cantoRigido : 0,
+          estado: "pendiente",
+          corte_completado: false,
+          enchape_completado: false,
+          tiempo_pausado_corte: 0,
+          tiempo_pausado_enchape: 0,
+          archivos_ped: archivosConvertidos,
+          imagenes_plano: [],
         })
-      }),
-    )
+        .select()
+        .single()
 
-    console.log("[v0] Archivos convertidos:", archivosConvertidos.length) // Debug log
+      if (errorNota) throw errorNota
 
-    const nuevaNP = controller.crearNotaPedido({
-      numero: numeroNP,
-      asesorId: user.id,
-      asesorNombre: user.nombre,
-      fechaCorte: fechaCorte,
-      cantidadLaminas,
-      tipoMaterial,
-      llevaCanto,
-      cantoFlexible: llevaCanto ? cantoFlexible : 0,
-      cantoRigido: llevaCanto ? cantoRigido : 0,
-      archivosPed: archivosConvertidos, // Pasando archivos convertidos
-    })
+      if (nuevaNota) {
+        const detallesMateriales = materiales.map((m) => ({
+          nota_id: nuevaNota.id,
+          tipo_material: m.tipo,
+          cantidad: m.cantidad,
+        }))
 
-    console.log("[v0] NP creada:", nuevaNP.numero, "con", nuevaNP.archivosPed.length, "archivos") // Debug log
+        await supabase.from("laminas_detalle").insert(detallesMateriales)
+      }
 
-    const notas = controller.obtenerNotasPorAsesor(user.id)
-    setNotasPedido(notas)
+      await cargarNotas()
 
-    setGuardadoExitoso(true)
-    setTimeout(() => setGuardadoExitoso(false), 3000)
+      setGuardadoExitoso(true)
+      setTimeout(() => setGuardadoExitoso(false), 3000)
 
-    // Reset form
-    setNumeroNP("")
-    setCantidadLaminas(1)
-    setTipoMaterial("aglomerado")
-    setLlevaCanto(false)
-    setCantoFlexible(0)
-    setCantoRigido(0)
-    setFechaCorte(new Date())
-    setArchivosPed([])
+      // Reset form
+      setNumeroNP("")
+      setMateriales([{ id: crypto.randomUUID(), tipo: "aglomerado", cantidad: 1 }])
+      setLlevaCanto(false)
+      setCantoFlexible(0)
+      setCantoRigido(0)
+      setFechaCorte(new Date())
+      setArchivosPed([])
+    } catch (error) {
+      console.error("[v0] Error al guardar NP:", error)
+      alert("Error al guardar la nota de pedido")
+    } finally {
+      setIsLoading(false)
+    }
   }
 
-  const handleCerrarNota = (notaId: string) => {
-    console.log("[v0] Cerrando nota:", notaId)
-    controller.cerrarNota(notaId)
-    if (user) {
-      const notas = controller.obtenerNotasPorAsesor(user.id)
-      console.log("[v0] Notas actualizadas después de cerrar:", notas)
-      setNotasPedido(notas)
+  const handleCerrarNota = async (notaId: string) => {
+    const { error } = await supabase.from("notas_pedido").update({ estado: "cerrado" }).eq("id", notaId)
+
+    if (!error) {
+      await cargarNotas()
     }
   }
 
@@ -134,20 +195,20 @@ export function AsesorVentasView() {
   const estaRetrasada = (nota: NotaPedido) => {
     const hoy = new Date()
     hoy.setHours(0, 0, 0, 0)
-    const fechaCorte = new Date(nota.fechaCorte)
-    fechaCorte.setHours(0, 0, 0, 0)
+    const fechaCorteNota = new Date(nota.fecha_corte)
+    fechaCorteNota.setHours(0, 0, 0, 0)
 
-    return fechaCorte < hoy && nota.estado !== "completado" && nota.estado !== "cerrado"
+    return fechaCorteNota < hoy && nota.estado !== "completado" && nota.estado !== "cerrado"
   }
 
-  const obtenerDiaSemana = (fecha: Date) => {
+  const obtenerDiaSemana = (fecha: string | Date) => {
     const dias = ["Domingo", "Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado"]
     return dias[new Date(fecha).getDay()]
   }
 
   const notasAgrupadas = notasPedido.reduce(
     (acc, nota) => {
-      const dia = obtenerDiaSemana(nota.fechaCorte)
+      const dia = obtenerDiaSemana(nota.fecha_corte)
       if (!acc[dia]) acc[dia] = []
       acc[dia].push(nota)
       return acc
@@ -159,7 +220,8 @@ export function AsesorVentasView() {
 
   const notasRetrasadas = notasPedido.filter(estaRetrasada).length
 
-  const formatearTiempo = (segundos: number) => {
+  const formatearTiempo = (segundos: number | null) => {
+    if (!segundos) return "0m 0s"
     const mins = Math.floor(segundos / 60)
     const secs = segundos % 60
     return `${mins}m ${secs}s`
@@ -176,7 +238,7 @@ export function AsesorVentasView() {
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <div>
-          <h2 className="text-3xl font-bold text-foreground">Panel de Programación</h2>
+          <h2 className="text-3xl font-bold text-foreground">Panel de Programacion</h2>
           <p className="text-muted-foreground">Bienvenido, {user?.nombre}</p>
           {notasRetrasadas > 0 && (
             <Badge variant="destructive" className="mt-2">
@@ -218,31 +280,61 @@ export function AsesorVentasView() {
               </Popover>
             </div>
 
-            <div className="grid gap-4 md:grid-cols-2">
-              <div className="space-y-2">
-                <Label htmlFor="cantidadLaminas">Cantidad de Láminas</Label>
-                <Input
-                  id="cantidadLaminas"
-                  type="number"
-                  min={1}
-                  value={cantidadLaminas}
-                  onChange={(e) => setCantidadLaminas(Number.parseInt(e.target.value) || 1)}
-                />
+            <div className="space-y-3">
+              <div className="flex items-center justify-between">
+                <Label>Laminas por Material</Label>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={handleAgregarMaterial}
+                  className="bg-transparent"
+                >
+                  <Plus className="h-4 w-4 mr-1" />
+                  Agregar Material
+                </Button>
               </div>
 
-              <div className="space-y-2">
-                <Label htmlFor="tipoMaterial">Tipo de Material</Label>
-                <Select value={tipoMaterial} onValueChange={(v) => setTipoMaterial(v as any)}>
-                  <SelectTrigger id="tipoMaterial">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="aglomerado">Aglomerado</SelectItem>
-                    <SelectItem value="crudo">Crudo</SelectItem>
-                    <SelectItem value="mdf">MDF</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
+              {materiales.map((material, index) => (
+                <div key={material.id} className="flex items-center gap-2 p-3 border rounded-lg bg-muted/30">
+                  <div className="flex-1">
+                    <Select value={material.tipo} onValueChange={(v) => handleCambiarMaterial(material.id, "tipo", v)}>
+                      <SelectTrigger className="bg-transparent">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="aglomerado">Aglomerado</SelectItem>
+                        <SelectItem value="crudo">Crudo</SelectItem>
+                        <SelectItem value="mdf">MDF</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div className="w-24">
+                    <Input
+                      type="number"
+                      min={1}
+                      value={material.cantidad}
+                      onChange={(e) => handleCambiarMaterial(material.id, "cantidad", e.target.value)}
+                      placeholder="Cant."
+                    />
+                  </div>
+                  {materiales.length > 1 && (
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="icon"
+                      onClick={() => handleEliminarMaterial(material.id)}
+                      className="text-destructive hover:text-destructive"
+                    >
+                      <Trash2 className="h-4 w-4" />
+                    </Button>
+                  )}
+                </div>
+              ))}
+
+              <p className="text-sm text-muted-foreground">
+                Total: <span className="font-semibold text-foreground">{cantidadTotalLaminas} laminas</span>
+              </p>
             </div>
 
             <div className="space-y-4">
@@ -275,7 +367,7 @@ export function AsesorVentasView() {
                   </div>
 
                   <div className="space-y-2">
-                    <Label htmlFor="cantoRigido">Canto Rígido (metros)</Label>
+                    <Label htmlFor="cantoRigido">Canto Rigido (metros)</Label>
                     <Input
                       id="cantoRigido"
                       type="number"
@@ -304,7 +396,7 @@ export function AsesorVentasView() {
                 <label htmlFor="archivosPed" className="cursor-pointer">
                   <Upload className="mx-auto h-8 w-8 text-muted-foreground mb-2" />
                   <p className="text-sm text-muted-foreground">Haz clic para cargar archivos .ped</p>
-                  <p className="text-xs text-muted-foreground mt-1">Puedes seleccionar múltiples archivos</p>
+                  <p className="text-xs text-muted-foreground mt-1">Puedes seleccionar multiples archivos</p>
                 </label>
               </div>
 
@@ -328,9 +420,9 @@ export function AsesorVentasView() {
               )}
             </div>
 
-            <Button onClick={handleGuardarNP} className="w-full" size="lg" disabled={!numeroNP}>
+            <Button onClick={handleGuardarNP} className="w-full" size="lg" disabled={!numeroNP || isLoading}>
               <Save className="mr-2 h-4 w-4" />
-              Guardar Nota Pedido
+              {isLoading ? "Guardando..." : "Guardar Nota Pedido"}
             </Button>
 
             {guardadoExitoso && (
@@ -352,13 +444,13 @@ export function AsesorVentasView() {
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="todos">Todos los días</SelectItem>
+                  <SelectItem value="todos">Todos los dias</SelectItem>
                   <SelectItem value="Lunes">Lunes</SelectItem>
                   <SelectItem value="Martes">Martes</SelectItem>
-                  <SelectItem value="Miércoles">Miércoles</SelectItem>
+                  <SelectItem value="Miercoles">Miercoles</SelectItem>
                   <SelectItem value="Jueves">Jueves</SelectItem>
                   <SelectItem value="Viernes">Viernes</SelectItem>
-                  <SelectItem value="Sábado">Sábado</SelectItem>
+                  <SelectItem value="Sabado">Sabado</SelectItem>
                   <SelectItem value="Domingo">Domingo</SelectItem>
                 </SelectContent>
               </Select>
@@ -370,7 +462,7 @@ export function AsesorVentasView() {
                 <FileText className="h-12 w-12 text-muted-foreground mb-3" />
                 <p className="text-muted-foreground">
                   {diaSeleccionado === "todos"
-                    ? "No has creado ninguna nota de pedido aún"
+                    ? "No has creado ninguna nota de pedido aun"
                     : `No hay notas programadas para ${diaSeleccionado}`}
                 </p>
               </div>
@@ -386,7 +478,8 @@ export function AsesorVentasView() {
                         <div>
                           <p className="font-bold text-lg">{nota.numero}</p>
                           <p className="text-xs text-muted-foreground">
-                            {obtenerDiaSemana(nota.fechaCorte)} - {format(nota.fechaCorte, "PPP", { locale: es })}
+                            {obtenerDiaSemana(nota.fecha_corte)} -{" "}
+                            {format(new Date(nota.fecha_corte), "PPP", { locale: es })}
                           </p>
                           {estaRetrasada(nota) && (
                             <Badge variant="destructive" className="mt-1 text-xs">
@@ -399,65 +492,70 @@ export function AsesorVentasView() {
 
                       <div className="grid grid-cols-2 gap-2 text-sm">
                         <div>
-                          <span className="text-muted-foreground">Láminas:</span>
-                          <span className="ml-2 font-medium">{nota.cantidadLaminas}</span>
+                          <span className="text-muted-foreground">Laminas:</span>
+                          <span className="ml-2 font-medium">{nota.cantidad_laminas}</span>
                         </div>
                         <div>
                           <span className="text-muted-foreground">Material:</span>
-                          <span className="ml-2 font-medium capitalize">{nota.tipoMaterial}</span>
+                          <span className="ml-2 font-medium capitalize">{nota.tipo_material}</span>
                         </div>
-                        {nota.llevaCanto && (
+                        {nota.lleva_canto && (
                           <>
                             <div>
                               <span className="text-muted-foreground">C. Flexible:</span>
-                              <span className="ml-2 font-medium">{nota.cantoFlexible}m</span>
+                              <span className="ml-2 font-medium">{nota.canto_flexible}m</span>
                             </div>
                             <div>
-                              <span className="text-muted-foreground">C. Rígido:</span>
-                              <span className="ml-2 font-medium">{nota.cantoRigido}m</span>
+                              <span className="text-muted-foreground">C. Rigido:</span>
+                              <span className="ml-2 font-medium">{nota.canto_rigido}m</span>
                             </div>
                           </>
                         )}
                       </div>
 
-                      {(nota.tiempoCorte || nota.tiempoEnchapeRigido || nota.tiempoEnchapeFlexible) && (
+                      {(nota.tiempo_corte || nota.tiempo_enchape_rigido || nota.tiempo_enchape_flexible) && (
                         <div className="mt-3 pt-3 border-t border-border space-y-1">
                           <p className="text-xs font-medium text-muted-foreground mb-2">Tiempos Registrados:</p>
-                          {nota.tiempoCorte && (
+                          {nota.tiempo_corte && (
                             <div className="flex items-center gap-2 text-sm">
                               <Clock className="h-3 w-3 text-primary" />
                               <span className="text-muted-foreground">Corte:</span>
-                              <span className="font-medium text-primary">{formatearTiempo(nota.tiempoCorte)}</span>
+                              <span className="font-medium text-primary">{formatearTiempo(nota.tiempo_corte)}</span>
+                              {nota.tiempo_pausado_corte > 0 && (
+                                <span className="text-xs text-yellow-600">
+                                  (+{formatearTiempo(nota.tiempo_pausado_corte)} pausado)
+                                </span>
+                              )}
                             </div>
                           )}
-                          {nota.tiempoEnchapeRigido && (
+                          {nota.tiempo_enchape_rigido && (
                             <div className="flex items-center gap-2 text-sm">
                               <Clock className="h-3 w-3 text-green-600" />
-                              <span className="text-muted-foreground">Enchape Rígido:</span>
+                              <span className="text-muted-foreground">Enchape Rigido:</span>
                               <span className="font-medium text-green-600">
-                                {formatearTiempo(nota.tiempoEnchapeRigido)}
+                                {formatearTiempo(nota.tiempo_enchape_rigido)}
                               </span>
                             </div>
                           )}
-                          {nota.tiempoEnchapeFlexible && (
+                          {nota.tiempo_enchape_flexible && (
                             <div className="flex items-center gap-2 text-sm">
                               <Clock className="h-3 w-3 text-blue-600" />
                               <span className="text-muted-foreground">Enchape Flexible:</span>
                               <span className="font-medium text-blue-600">
-                                {formatearTiempo(nota.tiempoEnchapeFlexible)}
+                                {formatearTiempo(nota.tiempo_enchape_flexible)}
                               </span>
                             </div>
                           )}
                         </div>
                       )}
 
-                      {nota.archivosPed && nota.archivosPed.length > 0 && (
+                      {nota.archivos_ped && nota.archivos_ped.length > 0 && (
                         <div className="mt-3 pt-3 border-t border-border">
                           <p className="text-xs font-medium text-muted-foreground mb-2">
-                            Planos Lepton ({nota.archivosPed.length}):
+                            Planos Lepton ({nota.archivos_ped.length}):
                           </p>
                           <div className="space-y-1">
-                            {nota.archivosPed.map((archivo, idx) => (
+                            {nota.archivos_ped.map((archivo, idx) => (
                               <Button
                                 key={idx}
                                 variant="outline"
@@ -473,21 +571,14 @@ export function AsesorVentasView() {
                         </div>
                       )}
 
-                      {nota.cortadorNombre && (
-                        <div className="mt-3 pt-3 border-t border-border text-sm">
-                          <span className="text-muted-foreground">Cortador:</span>
-                          <span className="ml-2 font-medium">{nota.cortadorNombre}</span>
-                        </div>
-                      )}
-
                       {nota.estado === "completado" && (
                         <Button
                           onClick={() => handleCerrarNota(nota.id)}
                           variant="outline"
                           size="sm"
-                          className="w-full mt-3"
+                          className="w-full mt-3 bg-transparent"
                         >
-                          Cerrar como Terminada
+                          Cerrar Nota
                         </Button>
                       )}
                     </CardContent>
