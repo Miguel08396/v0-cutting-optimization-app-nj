@@ -17,6 +17,7 @@ import {
   Clock,
   Timer,
   AlertTriangle,
+  Bell,
 } from "lucide-react"
 import { useAuth } from "@/lib/auth-context"
 import { createClient } from "@/lib/supabase/client"
@@ -31,7 +32,7 @@ interface LaminaCorteLocal {
   horaFin: Date | null
   tiempoTotal: number
   tiempoPausado: number
-  pausaActual: Date | null // Hora de inicio de pausa actual
+  pausaActual: Date | null
 }
 
 interface EnchapeRegistroLocal {
@@ -45,6 +46,11 @@ interface EnchapeRegistroLocal {
   pausaActual: Date | null
 }
 
+interface LaminaTimerState {
+  tiempoActual: number
+  tiempoPausado: number
+}
+
 export function CortadorView() {
   const { user } = useAuth()
   const supabase = createClient()
@@ -54,9 +60,8 @@ export function CortadorView() {
   const [notaSeleccionada, setNotaSeleccionada] = useState<NotaPedido | null>(null)
 
   const [laminasCorte, setLaminasCorte] = useState<LaminaCorteLocal[]>([])
-  const [laminaEnProceso, setLaminaEnProceso] = useState<number | null>(null)
-  const [tiempoActual, setTiempoActual] = useState(0)
-  const [tiempoPausadoActual, setTiempoPausadoActual] = useState(0)
+  const [laminasEnProceso, setLaminasEnProceso] = useState<Set<number>>(new Set())
+  const [tiemposLaminas, setTiemposLaminas] = useState<Map<number, LaminaTimerState>>(new Map())
   const intervalRef = useRef<NodeJS.Timeout | null>(null)
 
   const [enchapesRegistro, setEnchapesRegistro] = useState<EnchapeRegistroLocal[]>([])
@@ -107,33 +112,39 @@ export function CortadorView() {
     return () => clearInterval(interval)
   }, [cargarNotas, cargarTurnoActivo])
 
-  // Timer para lámina en proceso
   useEffect(() => {
-    if (laminaEnProceso !== null) {
-      const lamina = laminasCorte.find((l) => l.numero === laminaEnProceso)
-      if (lamina?.horaInicio) {
-        intervalRef.current = setInterval(() => {
-          const ahora = new Date()
+    if (laminasEnProceso.size > 0) {
+      intervalRef.current = setInterval(() => {
+        const ahora = new Date()
+        const nuevosTiempos = new Map<number, LaminaTimerState>()
 
-          if (lamina.estado === "pausado" && lamina.pausaActual) {
-            // Calcular tiempo pausado acumulado
-            const tiempoPausaActual = Math.floor((ahora.getTime() - lamina.pausaActual.getTime()) / 1000)
-            setTiempoPausadoActual(lamina.tiempoPausado + tiempoPausaActual)
-          } else if (lamina.estado === "en_proceso") {
-            // Calcular tiempo activo (total - pausado)
-            const tiempoTranscurrido = Math.floor((ahora.getTime() - lamina.horaInicio!.getTime()) / 1000)
-            setTiempoActual(tiempoTranscurrido - lamina.tiempoPausado)
-            setTiempoPausadoActual(lamina.tiempoPausado)
+        laminasEnProceso.forEach((numeroLamina) => {
+          const lamina = laminasCorte.find((l) => l.numero === numeroLamina)
+          if (lamina?.horaInicio) {
+            if (lamina.estado === "pausado" && lamina.pausaActual) {
+              const tiempoPausaActual = Math.floor((ahora.getTime() - lamina.pausaActual.getTime()) / 1000)
+              nuevosTiempos.set(numeroLamina, {
+                tiempoActual: 0,
+                tiempoPausado: lamina.tiempoPausado + tiempoPausaActual,
+              })
+            } else if (lamina.estado === "en_proceso") {
+              const tiempoTranscurrido = Math.floor((ahora.getTime() - lamina.horaInicio!.getTime()) / 1000)
+              nuevosTiempos.set(numeroLamina, {
+                tiempoActual: tiempoTranscurrido - lamina.tiempoPausado,
+                tiempoPausado: lamina.tiempoPausado,
+              })
+            }
           }
-        }, 1000)
-      }
+        })
+
+        setTiemposLaminas(nuevosTiempos)
+      }, 1000)
     } else {
       if (intervalRef.current) {
         clearInterval(intervalRef.current)
         intervalRef.current = null
       }
-      setTiempoActual(0)
-      setTiempoPausadoActual(0)
+      setTiemposLaminas(new Map())
     }
 
     return () => {
@@ -141,7 +152,7 @@ export function CortadorView() {
         clearInterval(intervalRef.current)
       }
     }
-  }, [laminaEnProceso, laminasCorte])
+  }, [laminasEnProceso, laminasCorte])
 
   // Timer para enchape en proceso
   useEffect(() => {
@@ -245,6 +256,14 @@ export function CortadorView() {
         pausaActual: null,
       }))
       setLaminasCorte(laminas)
+
+      const laminasActivas = new Set<number>()
+      laminas.forEach((l) => {
+        if (l.estado === "en_proceso" || l.estado === "pausado") {
+          laminasActivas.add(l.numero)
+        }
+      })
+      setLaminasEnProceso(laminasActivas)
     } else {
       // Crear nuevos registros
       const nuevosRegistros = Array.from({ length: nota.cantidad_laminas }, (_, i) => ({
@@ -269,6 +288,7 @@ export function CortadorView() {
         }))
         setLaminasCorte(laminas)
       }
+      setLaminasEnProceso(new Set())
     }
 
     // Cargar registros de enchape existentes o crear nuevos
@@ -373,7 +393,9 @@ export function CortadorView() {
           : l,
       ),
     )
-    setLaminaEnProceso(numeroLamina)
+
+    // Agregar a láminas en proceso
+    setLaminasEnProceso((prev) => new Set(prev).add(numeroLamina))
   }
 
   const handlePausarLamina = async (numeroLamina: number) => {
@@ -534,9 +556,13 @@ export function CortadorView() {
           : l,
       ),
     )
-    setLaminaEnProceso(null)
-    setTiempoActual(0)
-    setTiempoPausadoActual(0)
+
+    // Remover de láminas en proceso
+    setLaminasEnProceso((prev) => {
+      const newSet = new Set(prev)
+      newSet.delete(numeroLamina)
+      return newSet
+    })
   }
 
   const handleFinalizarCorte = async () => {
@@ -567,6 +593,8 @@ export function CortadorView() {
     }
 
     const requiereEnchape = notaSeleccionada.canto_rigido > 0 || notaSeleccionada.canto_flexible > 0
+
+    setLaminasEnProceso(new Set())
 
     if (requiereEnchape) {
       setVistaActual("enchape")
@@ -879,6 +907,32 @@ export function CortadorView() {
     return fechaCorte < hoy && nota.estado !== "completado" && nota.estado !== "cerrado"
   }
 
+  const getPrioridadColor = (tipoEntrega: NotaPedido["tipo_entrega"]) => {
+    switch (tipoEntrega) {
+      case "domicilio":
+        return "text-red-500"
+      case "retiro":
+        return "text-yellow-500"
+      case "portable":
+        return "text-green-500"
+      default:
+        return "text-muted-foreground"
+    }
+  }
+
+  const getTipoEntregaLabel = (tipoEntrega: NotaPedido["tipo_entrega"]) => {
+    switch (tipoEntrega) {
+      case "domicilio":
+        return "Domicilio"
+      case "retiro":
+        return "Retiro"
+      case "portable":
+        return "Portable"
+      default:
+        return ""
+    }
+  }
+
   const notasFiltradas =
     diaSeleccionado === "todos"
       ? notasPedido
@@ -1024,16 +1078,19 @@ export function CortadorView() {
                   >
                     <CardContent className="p-4">
                       <div className="flex items-start justify-between mb-3">
-                        <div>
-                          <p className="font-bold text-lg">{nota.numero}</p>
-                          <p className="text-sm text-muted-foreground">
-                            {obtenerDiaSemana(nota.fecha_corte)} - {format(new Date(nota.fecha_corte), "dd/MM/yyyy")}
-                          </p>
-                          {estaRetrasada(nota) && (
-                            <Badge variant="destructive" className="mt-1 text-xs">
-                              Retrasada
-                            </Badge>
-                          )}
+                        <div className="flex items-center gap-2">
+                          <Bell className={`h-5 w-5 ${getPrioridadColor(nota.tipo_entrega)}`} />
+                          <div>
+                            <p className="font-bold text-lg">{nota.numero}</p>
+                            <p className="text-sm text-muted-foreground">
+                              {obtenerDiaSemana(nota.fecha_corte)} - {format(new Date(nota.fecha_corte), "dd/MM/yyyy")}
+                            </p>
+                            {estaRetrasada(nota) && (
+                              <Badge variant="destructive" className="mt-1 text-xs">
+                                Retrasada
+                              </Badge>
+                            )}
+                          </div>
                         </div>
                         <Badge
                           variant={nota.corte_completado ? "secondary" : "default"}
@@ -1056,6 +1113,18 @@ export function CortadorView() {
                           <span className="text-muted-foreground">Material:</span>
                           <span className="font-medium capitalize">{nota.tipo_material}</span>
                         </div>
+                        <div className="flex justify-between">
+                          <span className="text-muted-foreground">Entrega:</span>
+                          <span className={`font-medium ${getPrioridadColor(nota.tipo_entrega)}`}>
+                            {getTipoEntregaLabel(nota.tipo_entrega)}
+                          </span>
+                        </div>
+                        {nota.cantidad_desplazamientos > 0 && (
+                          <div className="flex justify-between">
+                            <span className="text-muted-foreground">Desplazamientos:</span>
+                            <span className="font-medium">{nota.cantidad_desplazamientos}</span>
+                          </div>
+                        )}
                         {(nota.canto_rigido > 0 || nota.canto_flexible > 0) && (
                           <>
                             <div className="flex justify-between">
@@ -1113,9 +1182,14 @@ export function CortadorView() {
           Volver
         </Button>
 
-        <div>
-          <h2 className="text-2xl font-bold text-foreground">Trabajo en Proceso - {notaSeleccionada?.numero}</h2>
-          <p className="text-muted-foreground">{notaSeleccionada?.asesor_nombre}</p>
+        <div className="flex items-center gap-3">
+          <Bell className={`h-6 w-6 ${getPrioridadColor(notaSeleccionada?.tipo_entrega || "retiro")}`} />
+          <div>
+            <h2 className="text-2xl font-bold text-foreground">Trabajo en Proceso - {notaSeleccionada?.numero}</h2>
+            <p className="text-muted-foreground">
+              {notaSeleccionada?.asesor_nombre} - {getTipoEntregaLabel(notaSeleccionada?.tipo_entrega || "retiro")}
+            </p>
+          </div>
         </div>
 
         <div className="grid gap-6 md:grid-cols-2">
@@ -1129,6 +1203,11 @@ export function CortadorView() {
                   <h3 className="text-xl font-bold mb-2">Sierra Striebig</h3>
                   <p className="text-sm text-muted-foreground">Módulo de Corte</p>
                   <p className="text-sm font-medium mt-2">{notaSeleccionada?.cantidad_laminas} tableros para cortar</p>
+                  {notaSeleccionada?.cantidad_desplazamientos ? (
+                    <p className="text-xs text-muted-foreground mt-1">
+                      {notaSeleccionada.cantidad_desplazamientos} desplazamientos de sierra
+                    </p>
+                  ) : null}
                 </div>
                 <Button size="lg" className="w-full">
                   Iniciar Corte
@@ -1189,6 +1268,7 @@ export function CortadorView() {
 
   if (vistaActual === "corte") {
     const todasCompletas = laminasCorte.every((l) => l.estado === "completado")
+    const laminasActivasCount = laminasEnProceso.size
 
     return (
       <div className="space-y-6">
@@ -1197,8 +1277,21 @@ export function CortadorView() {
             <ArrowLeft className="mr-2 h-4 w-4" />
             Volver
           </Button>
-          <h2 className="text-2xl font-bold text-foreground">Proceso de Corte - Sierra Striebig</h2>
-          <p className="text-sm text-muted-foreground">NP: {notaSeleccionada?.numero}</p>
+          <div className="flex items-center gap-3">
+            <Bell className={`h-5 w-5 ${getPrioridadColor(notaSeleccionada?.tipo_entrega || "retiro")}`} />
+            <div>
+              <h2 className="text-2xl font-bold text-foreground">Proceso de Corte - Sierra Striebig</h2>
+              <p className="text-sm text-muted-foreground">
+                NP: {notaSeleccionada?.numero} - {getTipoEntregaLabel(notaSeleccionada?.tipo_entrega || "retiro")}
+                {notaSeleccionada?.cantidad_desplazamientos
+                  ? ` - ${notaSeleccionada.cantidad_desplazamientos} desplazamientos`
+                  : ""}
+              </p>
+            </div>
+          </div>
+          {laminasActivasCount > 0 && (
+            <Badge className="mt-2 bg-blue-500">{laminasActivasCount} corte(s) en proceso simultaneamente</Badge>
+          )}
         </div>
 
         <Card>
@@ -1206,125 +1299,131 @@ export function CortadorView() {
             <CardTitle>Tableros para Cortar ({laminasCorte.length})</CardTitle>
           </CardHeader>
           <CardContent className="space-y-3">
-            {laminasCorte.map((lamina) => (
-              <Card
-                key={lamina.numero}
-                className={`border-l-4 ${
-                  lamina.estado === "completado"
-                    ? "border-l-green-500"
-                    : lamina.estado === "en_proceso"
-                      ? "border-l-primary"
-                      : lamina.estado === "pausado"
-                        ? "border-l-yellow-500"
-                        : "border-l-border"
-                }`}
-              >
-                <CardContent className="p-4">
-                  <div className="flex items-center justify-between mb-3">
-                    <div>
-                      <p className="font-bold text-lg">Tablero {lamina.numero}</p>
-                      <div className="text-sm">
-                        {lamina.estado === "completado" && (
-                          <div className="space-y-1">
-                            <span className="text-green-600 font-medium block">
-                              Completado - Activo: {formatearTiempo(lamina.tiempoTotal)}
-                            </span>
-                            {lamina.tiempoPausado > 0 && (
-                              <span className="text-yellow-600 text-xs block">
-                                Pausado: {formatearTiempo(lamina.tiempoPausado)}
+            {laminasCorte.map((lamina) => {
+              const tiempoLamina = tiemposLaminas.get(lamina.numero)
+              const tiempoActualLamina = tiempoLamina?.tiempoActual || 0
+              const tiempoPausadoLamina = tiempoLamina?.tiempoPausado || lamina.tiempoPausado
+
+              return (
+                <Card
+                  key={lamina.numero}
+                  className={`border-l-4 ${
+                    lamina.estado === "completado"
+                      ? "border-l-green-500"
+                      : lamina.estado === "en_proceso"
+                        ? "border-l-primary"
+                        : lamina.estado === "pausado"
+                          ? "border-l-yellow-500"
+                          : "border-l-border"
+                  }`}
+                >
+                  <CardContent className="p-4">
+                    <div className="flex items-center justify-between mb-3">
+                      <div>
+                        <p className="font-bold text-lg">Tablero {lamina.numero}</p>
+                        <div className="text-sm">
+                          {lamina.estado === "completado" && (
+                            <div className="space-y-1">
+                              <span className="text-green-600 font-medium block">
+                                Completado - Activo: {formatearTiempo(lamina.tiempoTotal)}
                               </span>
-                            )}
-                          </div>
-                        )}
-                        {lamina.estado === "en_proceso" && laminaEnProceso === lamina.numero && (
-                          <div className="space-y-1">
-                            <span className="text-primary font-medium block">
-                              En proceso - Activo: {formatearTiempo(tiempoActual)}
-                            </span>
-                            {tiempoPausadoActual > 0 && (
-                              <span className="text-yellow-600 text-xs block">
-                                Pausado: {formatearTiempo(tiempoPausadoActual)}
+                              {lamina.tiempoPausado > 0 && (
+                                <span className="text-yellow-600 text-xs block">
+                                  Pausado: {formatearTiempo(lamina.tiempoPausado)}
+                                </span>
+                              )}
+                            </div>
+                          )}
+                          {lamina.estado === "en_proceso" && laminasEnProceso.has(lamina.numero) && (
+                            <div className="space-y-1">
+                              <span className="text-primary font-medium block">
+                                En proceso - Activo: {formatearTiempo(tiempoActualLamina)}
                               </span>
-                            )}
-                          </div>
-                        )}
-                        {lamina.estado === "pausado" && laminaEnProceso === lamina.numero && (
-                          <div className="space-y-1">
-                            <span className="text-yellow-600 font-medium flex items-center gap-1">
-                              <AlertTriangle className="h-4 w-4" />
-                              PAUSADO - {formatearTiempo(tiempoPausadoActual)}
-                            </span>
-                          </div>
-                        )}
-                        {lamina.estado === "pendiente" && <span className="text-muted-foreground">Sin iniciar</span>}
+                              {tiempoPausadoLamina > 0 && (
+                                <span className="text-yellow-600 text-xs block">
+                                  Pausado: {formatearTiempo(tiempoPausadoLamina)}
+                                </span>
+                              )}
+                            </div>
+                          )}
+                          {lamina.estado === "pausado" && laminasEnProceso.has(lamina.numero) && (
+                            <div className="space-y-1">
+                              <span className="text-yellow-600 font-medium flex items-center gap-1">
+                                <AlertTriangle className="h-4 w-4" />
+                                PAUSADO - {formatearTiempo(tiempoPausadoLamina)}
+                              </span>
+                            </div>
+                          )}
+                          {lamina.estado === "pendiente" && <span className="text-muted-foreground">Sin iniciar</span>}
+                        </div>
                       </div>
                     </div>
-                  </div>
 
-                  <div className="flex gap-2 flex-wrap">
-                    {lamina.estado === "pendiente" && (
-                      <Button onClick={() => handleIniciarLamina(lamina.numero)} className="flex-1" size="lg">
-                        <Play className="mr-2 h-4 w-4" />
-                        Iniciar
-                      </Button>
-                    )}
-
-                    {lamina.estado === "en_proceso" && laminaEnProceso === lamina.numero && (
-                      <>
-                        <Button
-                          onClick={() => handlePausarLamina(lamina.numero)}
-                          variant="secondary"
-                          className="flex-1 bg-yellow-500 hover:bg-yellow-600 text-background"
-                          size="lg"
-                        >
-                          <Pause className="mr-2 h-4 w-4" />
-                          Pausar
-                        </Button>
-                        <Button
-                          onClick={() => handleDetenerLamina(lamina.numero)}
-                          variant="default"
-                          className="flex-1 bg-green-600 hover:bg-green-700"
-                          size="lg"
-                        >
-                          <CheckCircle2 className="mr-2 h-4 w-4" />
-                          Finalizar
-                        </Button>
-                      </>
-                    )}
-
-                    {lamina.estado === "pausado" && laminaEnProceso === lamina.numero && (
-                      <>
-                        <Button
-                          onClick={() => handleContinuarLamina(lamina.numero)}
-                          variant="secondary"
-                          className="flex-1"
-                          size="lg"
-                        >
+                    <div className="flex gap-2 flex-wrap">
+                      {lamina.estado === "pendiente" && (
+                        <Button onClick={() => handleIniciarLamina(lamina.numero)} className="flex-1" size="lg">
                           <Play className="mr-2 h-4 w-4" />
-                          Continuar
+                          Iniciar
                         </Button>
-                        <Button
-                          onClick={() => handleDetenerLamina(lamina.numero)}
-                          variant="default"
-                          className="flex-1 bg-green-600 hover:bg-green-700"
-                          size="lg"
-                        >
-                          <CheckCircle2 className="mr-2 h-4 w-4" />
-                          Finalizar
-                        </Button>
-                      </>
-                    )}
+                      )}
 
-                    {lamina.estado === "completado" && (
-                      <Badge variant="secondary" className="bg-green-500 text-white text-sm py-2 px-4">
-                        <CheckCircle2 className="mr-2 h-4 w-4" />
-                        Completado
-                      </Badge>
-                    )}
-                  </div>
-                </CardContent>
-              </Card>
-            ))}
+                      {lamina.estado === "en_proceso" && laminasEnProceso.has(lamina.numero) && (
+                        <>
+                          <Button
+                            onClick={() => handlePausarLamina(lamina.numero)}
+                            variant="secondary"
+                            className="flex-1 bg-yellow-500 hover:bg-yellow-600 text-background"
+                            size="lg"
+                          >
+                            <Pause className="mr-2 h-4 w-4" />
+                            Pausar
+                          </Button>
+                          <Button
+                            onClick={() => handleDetenerLamina(lamina.numero)}
+                            variant="default"
+                            className="flex-1 bg-green-600 hover:bg-green-700"
+                            size="lg"
+                          >
+                            <CheckCircle2 className="mr-2 h-4 w-4" />
+                            Finalizar
+                          </Button>
+                        </>
+                      )}
+
+                      {lamina.estado === "pausado" && laminasEnProceso.has(lamina.numero) && (
+                        <>
+                          <Button
+                            onClick={() => handleContinuarLamina(lamina.numero)}
+                            variant="secondary"
+                            className="flex-1"
+                            size="lg"
+                          >
+                            <Play className="mr-2 h-4 w-4" />
+                            Continuar
+                          </Button>
+                          <Button
+                            onClick={() => handleDetenerLamina(lamina.numero)}
+                            variant="default"
+                            className="flex-1 bg-green-600 hover:bg-green-700"
+                            size="lg"
+                          >
+                            <CheckCircle2 className="mr-2 h-4 w-4" />
+                            Finalizar
+                          </Button>
+                        </>
+                      )}
+
+                      {lamina.estado === "completado" && (
+                        <Badge variant="secondary" className="bg-green-500 text-white text-sm py-2 px-4">
+                          <CheckCircle2 className="mr-2 h-4 w-4" />
+                          Completado
+                        </Badge>
+                      )}
+                    </div>
+                  </CardContent>
+                </Card>
+              )
+            })}
           </CardContent>
         </Card>
 
@@ -1348,8 +1447,15 @@ export function CortadorView() {
             <ArrowLeft className="mr-2 h-4 w-4" />
             Volver
           </Button>
-          <h2 className="text-2xl font-bold text-foreground">Proceso de Enchape - Enchapadora Fravol</h2>
-          <p className="text-sm text-muted-foreground">NP: {notaSeleccionada?.numero}</p>
+          <div className="flex items-center gap-3">
+            <Bell className={`h-5 w-5 ${getPrioridadColor(notaSeleccionada?.tipo_entrega || "retiro")}`} />
+            <div>
+              <h2 className="text-2xl font-bold text-foreground">Proceso de Enchape - Enchapadora Fravol</h2>
+              <p className="text-sm text-muted-foreground">
+                NP: {notaSeleccionada?.numero} - {getTipoEntregaLabel(notaSeleccionada?.tipo_entrega || "retiro")}
+              </p>
+            </div>
+          </div>
         </div>
 
         <Card>

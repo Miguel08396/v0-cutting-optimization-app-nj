@@ -37,6 +37,8 @@ export interface NotaPedido {
   enchape_completado: boolean
   archivos_ped: Array<{ nombre: string; url: string; fechaSubida: string }>
   imagenes_plano: Array<{ url: string; piezas: number }>
+  tipo_entrega: "domicilio" | "retiro" | "portable"
+  cantidad_desplazamientos: number
 }
 
 export interface RegistroCorte {

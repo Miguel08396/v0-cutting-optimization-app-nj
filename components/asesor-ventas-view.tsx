@@ -11,7 +11,7 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Badge } from "@/components/ui/badge"
-import { Save, CheckCircle2, FileText, CalendarIcon, Upload, Download, Clock, Plus, Trash2 } from "lucide-react"
+import { Save, CheckCircle2, FileText, CalendarIcon, Upload, Download, Clock, Plus, Trash2, Bell } from "lucide-react"
 import { useAuth } from "@/lib/auth-context"
 import { createClient } from "@/lib/supabase/client"
 import type { NotaPedido } from "@/lib/supabase/types"
@@ -38,6 +38,9 @@ export function AsesorVentasView() {
   const [cantoRigido, setCantoRigido] = useState(0)
   const [guardadoExitoso, setGuardadoExitoso] = useState(false)
   const [isLoading, setIsLoading] = useState(false)
+
+  const [tipoEntrega, setTipoEntrega] = useState<"domicilio" | "retiro" | "portable">("retiro")
+  const [cantidadDesplazamientos, setCantidadDesplazamientos] = useState(0)
 
   const [archivosPed, setArchivosPed] = useState<File[]>([])
 
@@ -135,6 +138,8 @@ export function AsesorVentasView() {
           tiempo_pausado_enchape: 0,
           archivos_ped: archivosConvertidos,
           imagenes_plano: [],
+          tipo_entrega: tipoEntrega,
+          cantidad_desplazamientos: cantidadDesplazamientos,
         })
         .select()
         .single()
@@ -164,6 +169,8 @@ export function AsesorVentasView() {
       setCantoRigido(0)
       setFechaCorte(new Date())
       setArchivosPed([])
+      setTipoEntrega("retiro")
+      setCantidadDesplazamientos(0)
     } catch (error) {
       console.error("[v0] Error al guardar NP:", error)
       alert("Error al guardar la nota de pedido")
@@ -190,6 +197,32 @@ export function AsesorVentasView() {
       cerrado: <Badge variant="outline">Cerrado</Badge>,
     }
     return badges[estado]
+  }
+
+  const getPrioridadColor = (tipoEntrega: NotaPedido["tipo_entrega"]) => {
+    switch (tipoEntrega) {
+      case "domicilio":
+        return "text-red-500"
+      case "retiro":
+        return "text-yellow-500"
+      case "portable":
+        return "text-green-500"
+      default:
+        return "text-muted-foreground"
+    }
+  }
+
+  const getTipoEntregaLabel = (tipoEntrega: NotaPedido["tipo_entrega"]) => {
+    switch (tipoEntrega) {
+      case "domicilio":
+        return "Domicilio"
+      case "retiro":
+        return "Retiro en tienda"
+      case "portable":
+        return "Portable"
+      default:
+        return "Sin especificar"
+    }
   }
 
   const estaRetrasada = (nota: NotaPedido) => {
@@ -266,6 +299,35 @@ export function AsesorVentasView() {
             </div>
 
             <div className="space-y-2">
+              <Label htmlFor="tipoEntrega">Tipo de Entrega</Label>
+              <Select value={tipoEntrega} onValueChange={(v) => setTipoEntrega(v as typeof tipoEntrega)}>
+                <SelectTrigger className="bg-transparent">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="domicilio">
+                    <div className="flex items-center gap-2">
+                      <Bell className="h-4 w-4 text-red-500" />
+                      Domicilio (Alta prioridad)
+                    </div>
+                  </SelectItem>
+                  <SelectItem value="retiro">
+                    <div className="flex items-center gap-2">
+                      <Bell className="h-4 w-4 text-yellow-500" />
+                      Retiro en tienda (Media prioridad)
+                    </div>
+                  </SelectItem>
+                  <SelectItem value="portable">
+                    <div className="flex items-center gap-2">
+                      <Bell className="h-4 w-4 text-green-500" />
+                      Portable (Baja prioridad)
+                    </div>
+                  </SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+
+            <div className="space-y-2">
               <Label>Fecha de Corte</Label>
               <Popover>
                 <PopoverTrigger asChild>
@@ -334,6 +396,21 @@ export function AsesorVentasView() {
 
               <p className="text-sm text-muted-foreground">
                 Total: <span className="font-semibold text-foreground">{cantidadTotalLaminas} laminas</span>
+              </p>
+            </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="desplazamientos">Cantidad de Desplazamientos de Sierra</Label>
+              <Input
+                id="desplazamientos"
+                type="number"
+                min={0}
+                placeholder="ej: 15"
+                value={cantidadDesplazamientos || ""}
+                onChange={(e) => setCantidadDesplazamientos(Number(e.target.value) || 0)}
+              />
+              <p className="text-xs text-muted-foreground">
+                Numero de movimientos de sierra necesarios para completar el corte
               </p>
             </div>
 
@@ -475,17 +552,20 @@ export function AsesorVentasView() {
                   >
                     <CardContent className="p-4">
                       <div className="flex items-start justify-between mb-3">
-                        <div>
-                          <p className="font-bold text-lg">{nota.numero}</p>
-                          <p className="text-xs text-muted-foreground">
-                            {obtenerDiaSemana(nota.fecha_corte)} -{" "}
-                            {format(new Date(nota.fecha_corte), "PPP", { locale: es })}
-                          </p>
-                          {estaRetrasada(nota) && (
-                            <Badge variant="destructive" className="mt-1 text-xs">
-                              Retrasada
-                            </Badge>
-                          )}
+                        <div className="flex items-center gap-2">
+                          <Bell className={`h-5 w-5 ${getPrioridadColor(nota.tipo_entrega)}`} />
+                          <div>
+                            <p className="font-bold text-lg">{nota.numero}</p>
+                            <p className="text-xs text-muted-foreground">
+                              {obtenerDiaSemana(nota.fecha_corte)} -{" "}
+                              {format(new Date(nota.fecha_corte), "PPP", { locale: es })}
+                            </p>
+                            {estaRetrasada(nota) && (
+                              <Badge variant="destructive" className="mt-1 text-xs">
+                                Retrasada
+                              </Badge>
+                            )}
+                          </div>
                         </div>
                         {getEstadoBadge(nota.estado)}
                       </div>
@@ -499,6 +579,18 @@ export function AsesorVentasView() {
                           <span className="text-muted-foreground">Material:</span>
                           <span className="ml-2 font-medium capitalize">{nota.tipo_material}</span>
                         </div>
+                        <div>
+                          <span className="text-muted-foreground">Entrega:</span>
+                          <span className={`ml-2 font-medium ${getPrioridadColor(nota.tipo_entrega)}`}>
+                            {getTipoEntregaLabel(nota.tipo_entrega)}
+                          </span>
+                        </div>
+                        {nota.cantidad_desplazamientos > 0 && (
+                          <div>
+                            <span className="text-muted-foreground">Desplaz.:</span>
+                            <span className="ml-2 font-medium">{nota.cantidad_desplazamientos}</span>
+                          </div>
+                        )}
                         {nota.lleva_canto && (
                           <>
                             <div>
