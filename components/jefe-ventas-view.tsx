@@ -29,6 +29,9 @@ import {
   Wifi,
   WifiOff,
   RefreshCw,
+  Bell,
+  Ruler,
+  Scissors,
 } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -42,6 +45,32 @@ import { registerUser, getAllUsers, deactivateUser } from "@/lib/services/auth-s
 import type { Usuario, NotaPedido } from "@/lib/supabase/types"
 
 const COLORS = ["#FFEB3B", "#1E1E1E", "#FDD835", "#424242", "#FFEE58"]
+
+function formatTiempo(segundos: number): string {
+  const minutos = Math.round(segundos / 60)
+  if (minutos < 60) {
+    return `${minutos} min`
+  }
+  const horas = Math.floor(minutos / 60)
+  const minutosRestantes = minutos % 60
+  if (minutosRestantes === 0) {
+    return `${horas}h`
+  }
+  return `${horas}h ${minutosRestantes}m`
+}
+
+function getPrioridadInfo(tipo: string | null | undefined): { color: string; label: string; bgClass: string } {
+  switch (tipo) {
+    case "domicilio":
+      return { color: "text-red-500", label: "Domicilio", bgClass: "bg-red-500/10" }
+    case "retiro_tienda":
+      return { color: "text-yellow-500", label: "Retiro", bgClass: "bg-yellow-500/10" }
+    case "portable":
+      return { color: "text-green-500", label: "Portable", bgClass: "bg-green-500/10" }
+    default:
+      return { color: "text-muted-foreground", label: "N/A", bgClass: "bg-muted" }
+  }
+}
 
 export function JefeVentasView() {
   const [notasPedidoData, setNotasPedidoData] = useState<NotaPedido[]>([])
@@ -101,32 +130,6 @@ export function JefeVentasView() {
   // Usar notas del hook realtime
   const notasPedido = notas.length > 0 ? notas : notasPedidoData
 
-  const handleCrearUsuario = async () => {
-    if (!nuevoUsuario.nombre || !nuevoUsuario.email || !nuevoUsuario.password) {
-      alert("Por favor complete todos los campos")
-      return
-    }
-
-    const result = await registerUser(nuevoUsuario.nombre, nuevoUsuario.email, nuevoUsuario.password, nuevoUsuario.role)
-
-    if (!result.success) {
-      alert(result.error || "Error al crear usuario")
-      return
-    }
-
-    setUsuarios(await getAllUsers())
-    setNuevoUsuario({ nombre: "", email: "", password: "", role: "cortador" })
-    alert(`Usuario ${nuevoUsuario.nombre} creado exitosamente`)
-  }
-
-  const handleEliminarUsuario = async (id: string) => {
-    if (confirm("¿Está seguro de eliminar este usuario?")) {
-      await deactivateUser(id)
-      setUsuarios(await getAllUsers())
-    }
-  }
-
-  // Cálculos de métricas usando los datos de Supabase
   const cortesHoy = notasPedido.filter((np) => {
     const hoy = new Date()
     const fechaProceso = np.fecha_inicio_proceso ? new Date(np.fecha_inicio_proceso) : null
@@ -241,6 +244,49 @@ export function JefeVentasView() {
       console.error("Error al descargar plano:", error)
     }
   }
+
+  const handleCrearUsuario = async () => {
+    if (!nuevoUsuario.nombre || !nuevoUsuario.email || !nuevoUsuario.password) {
+      alert("Por favor complete todos los campos")
+      return
+    }
+
+    const result = await registerUser(nuevoUsuario.nombre, nuevoUsuario.email, nuevoUsuario.password, nuevoUsuario.role)
+
+    if (!result.success) {
+      alert(result.error || "Error al crear usuario")
+      return
+    }
+
+    setUsuarios(await getAllUsers())
+    setNuevoUsuario({ nombre: "", email: "", password: "", role: "cortador" })
+    alert(`Usuario ${nuevoUsuario.nombre} creado exitosamente`)
+  }
+
+  const handleEliminarUsuario = async (id: string) => {
+    if (confirm("¿Está seguro de eliminar este usuario?")) {
+      await deactivateUser(id)
+      setUsuarios(await getAllUsers())
+    }
+  }
+
+  const totalesCompletados = cortesCompletados.reduce(
+    (acc, np) => {
+      return {
+        metrosRigido: acc.metrosRigido + (np.metros_rigido || 0),
+        metrosFlexible: acc.metrosFlexible + (np.metros_flexible || 0),
+        totalLaminas: acc.totalLaminas + (np.cantidad_laminas || 0),
+        totalDesplazamientos: acc.totalDesplazamientos + (np.cantidad_desplazamientos || 0),
+        tiempoTotal:
+          acc.tiempoTotal +
+          (np.tiempo_corte || 0) +
+          (np.tiempo_enchape_rigido || 0) +
+          (np.tiempo_enchape_flexible || 0),
+        tiempoPausado: acc.tiempoPausado + (np.tiempo_pausado_corte || 0) + (np.tiempo_pausado_enchape || 0),
+      }
+    },
+    { metrosRigido: 0, metrosFlexible: 0, totalLaminas: 0, totalDesplazamientos: 0, tiempoTotal: 0, tiempoPausado: 0 },
+  )
 
   if (isLoading) {
     return (
@@ -509,33 +555,95 @@ export function JefeVentasView() {
         </TabsContent>
 
         <TabsContent value="notasterminadas" className="space-y-4">
+          <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-5">
+            <Card className="border-l-4 border-l-blue-500">
+              <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+                <CardTitle className="text-sm font-medium">Metros Rígido</CardTitle>
+                <Ruler className="h-4 w-4 text-blue-500" />
+              </CardHeader>
+              <CardContent>
+                <div className="text-2xl font-bold text-blue-600">{totalesCompletados.metrosRigido.toFixed(2)} m</div>
+                <p className="text-xs text-muted-foreground">Total enchape rígido</p>
+              </CardContent>
+            </Card>
+
+            <Card className="border-l-4 border-l-purple-500">
+              <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+                <CardTitle className="text-sm font-medium">Metros Flexible</CardTitle>
+                <Ruler className="h-4 w-4 text-purple-500" />
+              </CardHeader>
+              <CardContent>
+                <div className="text-2xl font-bold text-purple-600">
+                  {totalesCompletados.metrosFlexible.toFixed(2)} m
+                </div>
+                <p className="text-xs text-muted-foreground">Total enchape flexible</p>
+              </CardContent>
+            </Card>
+
+            <Card className="border-l-4 border-l-green-500">
+              <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+                <CardTitle className="text-sm font-medium">Total Láminas</CardTitle>
+                <Scissors className="h-4 w-4 text-green-500" />
+              </CardHeader>
+              <CardContent>
+                <div className="text-2xl font-bold text-green-600">{totalesCompletados.totalLaminas}</div>
+                <p className="text-xs text-muted-foreground">Láminas cortadas</p>
+              </CardContent>
+            </Card>
+
+            <Card className="border-l-4 border-l-orange-500">
+              <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+                <CardTitle className="text-sm font-medium">Desplazamientos</CardTitle>
+                <Target className="h-4 w-4 text-orange-500" />
+              </CardHeader>
+              <CardContent>
+                <div className="text-2xl font-bold text-orange-600">{totalesCompletados.totalDesplazamientos}</div>
+                <p className="text-xs text-muted-foreground">Total movimientos sierra</p>
+              </CardContent>
+            </Card>
+
+            <Card className="border-l-4 border-l-primary">
+              <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+                <CardTitle className="text-sm font-medium">Tiempo Total</CardTitle>
+                <Clock className="h-4 w-4 text-primary" />
+              </CardHeader>
+              <CardContent>
+                <div className="text-2xl font-bold">{formatTiempo(totalesCompletados.tiempoTotal)}</div>
+                <p className="text-xs text-muted-foreground">
+                  Pausado: {formatTiempo(totalesCompletados.tiempoPausado)}
+                </p>
+              </CardContent>
+            </Card>
+          </div>
+
           <Card>
             <CardHeader>
               <CardTitle>Notas de Pedido Terminadas</CardTitle>
               <CardDescription>
-                Detalles de tiempos por nota - Promedio:{" "}
-                {cortesCompletados.length > 0
-                  ? `${Math.round(cortesCompletados.reduce((acc, np) => acc + (np.cantidad_laminas || 1), 0) / cortesCompletados.length)} láminas/nota, ${Math.round(
-                      cortesCompletados.reduce((acc, np) => {
-                        const tiempoTotal =
-                          (np.tiempo_corte || 0) + (np.tiempo_enchape_rigido || 0) + (np.tiempo_enchape_flexible || 0)
-                        return acc + tiempoTotal / (np.cantidad_laminas || 1)
-                      }, 0) /
-                        cortesCompletados.length /
-                        60,
-                    )} min/lámina`
-                  : "Sin datos"}
+                Detalles de tiempos por nota - {cortesCompletados.length} notas completadas
+                {cortesCompletados.length > 0 && (
+                  <span className="block mt-1">
+                    Promedio: {Math.round(totalesCompletados.totalLaminas / cortesCompletados.length)} láminas/nota |{" "}
+                    {Math.round(totalesCompletados.totalDesplazamientos / cortesCompletados.length)}{" "}
+                    desplazamientos/nota | {formatTiempo(totalesCompletados.tiempoTotal / cortesCompletados.length)} por
+                    nota
+                  </span>
+                )}
               </CardDescription>
             </CardHeader>
             <CardContent>
-              <div className="max-h-96 overflow-auto">
+              <div className="max-h-[500px] overflow-auto">
                 <table className="w-full">
-                  <thead className="sticky top-0 bg-card">
+                  <thead className="sticky top-0 bg-card z-10">
                     <tr className="border-b">
                       <th className="text-left p-2 font-medium">NP</th>
+                      <th className="text-left p-2 font-medium">Prioridad</th>
                       <th className="text-left p-2 font-medium">Cliente</th>
                       <th className="text-left p-2 font-medium">Cortador</th>
                       <th className="text-right p-2 font-medium">Láminas</th>
+                      <th className="text-right p-2 font-medium">Desplaz.</th>
+                      <th className="text-right p-2 font-medium">M. Rígido</th>
+                      <th className="text-right p-2 font-medium">M. Flexible</th>
                       <th className="text-right p-2 font-medium">T. Corte</th>
                       <th className="text-right p-2 font-medium">T. Enchape</th>
                       <th className="text-right p-2 font-medium">T. Pausado</th>
@@ -543,28 +651,68 @@ export function JefeVentasView() {
                     </tr>
                   </thead>
                   <tbody>
-                    {cortesCompletados.slice(0, 20).map((np) => {
+                    {cortesCompletados.slice(0, 50).map((np) => {
                       const tiempoTotal =
                         (np.tiempo_corte || 0) + (np.tiempo_enchape_rigido || 0) + (np.tiempo_enchape_flexible || 0)
                       const tiempoPausado = (np.tiempo_pausado_corte || 0) + (np.tiempo_pausado_enchape || 0)
+                      const prioridadInfo = getPrioridadInfo(np.tipo_entrega)
                       return (
                         <tr key={np.id} className="border-b hover:bg-muted/50">
-                          <td className="p-2 font-mono text-sm">{np.numero}</td>
+                          <td className="p-2 font-mono text-sm font-medium">{np.numero}</td>
+                          <td className="p-2">
+                            <div
+                              className={`flex items-center gap-1 px-2 py-1 rounded-full text-xs ${prioridadInfo.bgClass}`}
+                            >
+                              <Bell className={`h-3 w-3 ${prioridadInfo.color}`} />
+                              <span className={prioridadInfo.color}>{prioridadInfo.label}</span>
+                            </div>
+                          </td>
                           <td className="p-2 text-sm">{np.cliente}</td>
                           <td className="p-2 text-sm">{np.cortador_nombre || "-"}</td>
-                          <td className="p-2 text-right text-sm">{np.cantidad_laminas || 1}</td>
-                          <td className="p-2 text-right text-sm">{Math.round((np.tiempo_corte || 0) / 60)} min</td>
+                          <td className="p-2 text-right text-sm">{np.cantidad_laminas || 0}</td>
+                          <td className="p-2 text-right text-sm font-medium text-orange-600">
+                            {np.cantidad_desplazamientos || 0}
+                          </td>
+                          <td className="p-2 text-right text-sm text-blue-600">{(np.metros_rigido || 0).toFixed(2)}</td>
+                          <td className="p-2 text-right text-sm text-purple-600">
+                            {(np.metros_flexible || 0).toFixed(2)}
+                          </td>
+                          <td className="p-2 text-right text-sm">{formatTiempo(np.tiempo_corte || 0)}</td>
                           <td className="p-2 text-right text-sm">
-                            {Math.round(((np.tiempo_enchape_rigido || 0) + (np.tiempo_enchape_flexible || 0)) / 60)} min
+                            {formatTiempo((np.tiempo_enchape_rigido || 0) + (np.tiempo_enchape_flexible || 0))}
                           </td>
-                          <td className="p-2 text-right text-sm text-yellow-600">
-                            {Math.round(tiempoPausado / 60)} min
-                          </td>
-                          <td className="p-2 text-right text-sm font-medium">{Math.round(tiempoTotal / 60)} min</td>
+                          <td className="p-2 text-right text-sm text-yellow-600">{formatTiempo(tiempoPausado)}</td>
+                          <td className="p-2 text-right text-sm font-bold">{formatTiempo(tiempoTotal)}</td>
                         </tr>
                       )
                     })}
                   </tbody>
+                  <tfoot className="sticky bottom-0 bg-card border-t-2 border-primary">
+                    <tr className="font-bold">
+                      <td className="p-2" colSpan={4}>
+                        TOTALES ({cortesCompletados.length} notas)
+                      </td>
+                      <td className="p-2 text-right">{totalesCompletados.totalLaminas}</td>
+                      <td className="p-2 text-right text-orange-600">{totalesCompletados.totalDesplazamientos}</td>
+                      <td className="p-2 text-right text-blue-600">{totalesCompletados.metrosRigido.toFixed(2)}</td>
+                      <td className="p-2 text-right text-purple-600">{totalesCompletados.metrosFlexible.toFixed(2)}</td>
+                      <td className="p-2 text-right">
+                        {formatTiempo(cortesCompletados.reduce((acc, np) => acc + (np.tiempo_corte || 0), 0))}
+                      </td>
+                      <td className="p-2 text-right">
+                        {formatTiempo(
+                          cortesCompletados.reduce(
+                            (acc, np) => acc + (np.tiempo_enchape_rigido || 0) + (np.tiempo_enchape_flexible || 0),
+                            0,
+                          ),
+                        )}
+                      </td>
+                      <td className="p-2 text-right text-yellow-600">
+                        {formatTiempo(totalesCompletados.tiempoPausado)}
+                      </td>
+                      <td className="p-2 text-right">{formatTiempo(totalesCompletados.tiempoTotal)}</td>
+                    </tr>
+                  </tfoot>
                 </table>
                 {cortesCompletados.length === 0 && (
                   <div className="text-center py-4 text-muted-foreground">No hay notas completadas</div>
