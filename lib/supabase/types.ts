@@ -39,8 +39,6 @@ export interface NotaPedido {
   imagenes_plano: Array<{ url: string; piezas: number }>
   tipo_entrega: "domicilio" | "retiro" | "portable"
   cantidad_desplazamientos: number
-  lleva_perforaciones: boolean
-  cantidad_perforaciones: number
 }
 
 export interface RegistroCorte {

@@ -41,8 +41,6 @@ export function AsesorVentasView() {
 
   const [tipoEntrega, setTipoEntrega] = useState<"domicilio" | "retiro" | "portable">("retiro")
   const [cantidadDesplazamientos, setCantidadDesplazamientos] = useState(0)
-  const [llevaPerforaciones, setLlevaPerforaciones] = useState(false)
-  const [cantidadPerforaciones, setCantidadPerforaciones] = useState(0)
 
   const [archivosPed, setArchivosPed] = useState<File[]>([])
 
@@ -142,8 +140,6 @@ export function AsesorVentasView() {
           imagenes_plano: [],
           tipo_entrega: tipoEntrega,
           cantidad_desplazamientos: cantidadDesplazamientos,
-          lleva_perforaciones: llevaPerforaciones,
-          cantidad_perforaciones: llevaPerforaciones ? cantidadPerforaciones : 0,
         })
         .select()
         .single()
@@ -175,8 +171,6 @@ export function AsesorVentasView() {
       setArchivosPed([])
       setTipoEntrega("retiro")
       setCantidadDesplazamientos(0)
-      setLlevaPerforaciones(false)
-      setCantidadPerforaciones(0)
     } catch (error) {
       console.error("[v0] Error al guardar NP:", error)
       alert("Error al guardar la nota de pedido")
@@ -418,35 +412,6 @@ export function AsesorVentasView() {
               <p className="text-xs text-muted-foreground">
                 Numero de movimientos de sierra necesarios para completar el corte
               </p>
-            </div>
-
-            <div className="space-y-4">
-              <div className="flex items-center gap-3">
-                <input
-                  type="checkbox"
-                  id="llevaPerforaciones"
-                  checked={llevaPerforaciones}
-                  onChange={(e) => setLlevaPerforaciones(e.target.checked)}
-                  className="h-4 w-4 rounded border-border"
-                />
-                <Label htmlFor="llevaPerforaciones" className="cursor-pointer">
-                  Lleva perforaciones
-                </Label>
-              </div>
-
-              {llevaPerforaciones && (
-                <div className="space-y-2 pl-7">
-                  <Label htmlFor="cantidadPerforaciones">Cantidad de Perforaciones</Label>
-                  <Input
-                    id="cantidadPerforaciones"
-                    type="number"
-                    min={1}
-                    placeholder="ej: 10"
-                    value={cantidadPerforaciones || ""}
-                    onChange={(e) => setCantidadPerforaciones(Number(e.target.value) || 0)}
-                  />
-                </div>
-              )}
             </div>
 
             <div className="space-y-4">

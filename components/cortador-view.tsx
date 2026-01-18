@@ -244,39 +244,17 @@ export function CortadorView() {
       .order("numero_lamina")
 
     if (registrosCorte && registrosCorte.length > 0) {
-      // Cargar pausas activas para restaurar estado
-      const registrosConPausa = await Promise.all(
-        registrosCorte.map(async (r: RegistroCorte) => {
-          let pausaActual: Date | null = null
-          
-          // Si está pausado, buscar la pausa activa
-          if (r.estado === "pausado") {
-            const { data: pausaActiva } = await supabase
-              .from("pausas")
-              .select("*")
-              .eq("registro_corte_id", r.id)
-              .is("hora_fin", null)
-              .single()
-            
-            if (pausaActiva) {
-              pausaActual = new Date(pausaActiva.hora_inicio)
-            }
-          }
-          
-          return {
-            id: r.id,
-            numero: r.numero_lamina,
-            estado: r.estado,
-            horaInicio: r.hora_inicio ? new Date(r.hora_inicio) : null,
-            horaFin: r.hora_fin ? new Date(r.hora_fin) : null,
-            tiempoTotal: r.tiempo_total || 0,
-            tiempoPausado: r.tiempo_pausado || 0,
-            pausaActual,
-          }
-        })
-      )
-      
-      const laminas: LaminaCorteLocal[] = registrosConPausa
+      // Usar registros existentes
+      const laminas: LaminaCorteLocal[] = registrosCorte.map((r: RegistroCorte) => ({
+        id: r.id,
+        numero: r.numero_lamina,
+        estado: r.estado,
+        horaInicio: r.hora_inicio ? new Date(r.hora_inicio) : null,
+        horaFin: r.hora_fin ? new Date(r.hora_fin) : null,
+        tiempoTotal: r.tiempo_total || 0,
+        tiempoPausado: r.tiempo_pausado || 0,
+        pausaActual: null,
+      }))
       setLaminasCorte(laminas)
 
       const laminasActivas = new Set<number>()
@@ -317,46 +295,17 @@ export function CortadorView() {
     const { data: registrosEnchape } = await supabase.from("registros_enchape").select("*").eq("nota_id", nota.id)
 
     if (registrosEnchape && registrosEnchape.length > 0) {
-      // Cargar pausas activas para restaurar estado de enchapes
-      const enchapesConPausa = await Promise.all(
-        registrosEnchape.map(async (r: RegistroEnchape) => {
-          let pausaActual: Date | null = null
-          
-          // Si está pausado, buscar la pausa activa
-          if (r.estado === "pausado") {
-            const { data: pausaActiva } = await supabase
-              .from("pausas")
-              .select("*")
-              .eq("registro_enchape_id", r.id)
-              .is("hora_fin", null)
-              .single()
-            
-            if (pausaActiva) {
-              pausaActual = new Date(pausaActiva.hora_inicio)
-            }
-          }
-          
-          return {
-            id: r.id,
-            tipo: r.tipo,
-            estado: r.estado,
-            horaInicio: r.hora_inicio ? new Date(r.hora_inicio) : null,
-            horaFin: r.hora_fin ? new Date(r.hora_fin) : null,
-            tiempoTotal: r.tiempo_total || 0,
-            tiempoPausado: r.tiempo_pausado || 0,
-            pausaActual,
-          }
-        })
-      )
-      
-      const enchapes: EnchapeRegistroLocal[] = enchapesConPausa
+      const enchapes: EnchapeRegistroLocal[] = registrosEnchape.map((r: RegistroEnchape) => ({
+        id: r.id,
+        tipo: r.tipo,
+        estado: r.estado,
+        horaInicio: r.hora_inicio ? new Date(r.hora_inicio) : null,
+        horaFin: r.hora_fin ? new Date(r.hora_fin) : null,
+        tiempoTotal: r.tiempo_total || 0,
+        tiempoPausado: r.tiempo_pausado || 0,
+        pausaActual: null,
+      }))
       setEnchapesRegistro(enchapes)
-      
-      // Restaurar enchape en proceso si existe
-      const enchapeActivo = enchapes.find((e) => e.estado === "en_proceso" || e.estado === "pausado")
-      if (enchapeActivo) {
-        setEnchapeEnProceso(enchapeActivo.tipo)
-      }
     } else {
       const nuevosEnchapes: Array<{
         nota_id: string
@@ -1176,12 +1125,6 @@ export function CortadorView() {
                             <span className="font-medium">{nota.cantidad_desplazamientos}</span>
                           </div>
                         )}
-                        {nota.lleva_perforaciones && (
-                          <div className="flex justify-between">
-                            <span className="text-muted-foreground">Perforaciones:</span>
-                            <span className="font-medium text-orange-500">{nota.cantidad_perforaciones}</span>
-                          </div>
-                        )}
                         {(nota.canto_rigido > 0 || nota.canto_flexible > 0) && (
                           <>
                             <div className="flex justify-between">
@@ -1265,11 +1208,6 @@ export function CortadorView() {
                       {notaSeleccionada.cantidad_desplazamientos} desplazamientos de sierra
                     </p>
                   ) : null}
-                  {notaSeleccionada?.lleva_perforaciones && (
-                    <p className="text-xs text-orange-500 mt-1">
-                      {notaSeleccionada.cantidad_perforaciones} perforaciones
-                    </p>
-                  )}
                 </div>
                 <Button size="lg" className="w-full">
                   Iniciar Corte
@@ -1343,15 +1281,12 @@ export function CortadorView() {
             <Bell className={`h-5 w-5 ${getPrioridadColor(notaSeleccionada?.tipo_entrega || "retiro")}`} />
             <div>
               <h2 className="text-2xl font-bold text-foreground">Proceso de Corte - Sierra Striebig</h2>
-  <p className="text-sm text-muted-foreground">
-                  NP: {notaSeleccionada?.numero} - {getTipoEntregaLabel(notaSeleccionada?.tipo_entrega || "retiro")}
-                  {notaSeleccionada?.cantidad_desplazamientos
-                    ? ` - ${notaSeleccionada.cantidad_desplazamientos} desplazamientos`
-                    : ""}
-                  {notaSeleccionada?.lleva_perforaciones
-                    ? ` - ${notaSeleccionada.cantidad_perforaciones} perforaciones`
-                    : ""}
-                  </p>
+              <p className="text-sm text-muted-foreground">
+                NP: {notaSeleccionada?.numero} - {getTipoEntregaLabel(notaSeleccionada?.tipo_entrega || "retiro")}
+                {notaSeleccionada?.cantidad_desplazamientos
+                  ? ` - ${notaSeleccionada.cantidad_desplazamientos} desplazamientos`
+                  : ""}
+              </p>
             </div>
           </div>
           {laminasActivasCount > 0 && (
