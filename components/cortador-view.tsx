@@ -1,78 +1,150 @@
 "use client"
-import { useState, useEffect, useRef } from "react"
+import { useState, useEffect, useRef, useCallback } from "react"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
-import { Play, CheckCircle2, ArrowLeft, Pause, Scissors, Shield, Calendar, Download, FileText } from "lucide-react"
+import {
+  Play,
+  CheckCircle2,
+  ArrowLeft,
+  Pause,
+  Scissors,
+  Shield,
+  Calendar,
+  Download,
+  FileText,
+  Clock,
+  Timer,
+  AlertTriangle,
+  Bell,
+} from "lucide-react"
 import { useAuth } from "@/lib/auth-context"
-import { NotaPedidoController } from "@/lib/nota-pedido-controller"
-import type { NotaPedido } from "@/lib/nota-pedido-model"
+import { createClient } from "@/lib/supabase/client"
+import type { NotaPedido, RegistroCorte, RegistroEnchape, Turno } from "@/lib/supabase/types"
 import { format } from "date-fns"
 
-interface LaminaCorte {
+interface LaminaCorteLocal {
+  id: string
   numero: number
-  estado: "sin_iniciar" | "en_proceso" | "completado"
+  estado: "pendiente" | "en_proceso" | "pausado" | "completado"
   horaInicio: Date | null
   horaFin: Date | null
   tiempoTotal: number
+  tiempoPausado: number
+  pausaActual: Date | null
 }
 
-interface EnchapeRegistro {
+interface EnchapeRegistroLocal {
+  id: string
   tipo: "rigido" | "flexible"
-  estado: "sin_iniciar" | "en_proceso" | "completado"
+  estado: "pendiente" | "en_proceso" | "pausado" | "completado"
   horaInicio: Date | null
   horaFin: Date | null
   tiempoTotal: number
+  tiempoPausado: number
+  pausaActual: Date | null
+}
+
+interface LaminaTimerState {
+  tiempoActual: number
+  tiempoPausado: number
 }
 
 export function CortadorView() {
   const { user } = useAuth()
-  const [controller] = useState(() => new NotaPedidoController())
+  const supabase = createClient()
 
   const [vistaActual, setVistaActual] = useState<"lista" | "seleccion" | "corte" | "enchape">("lista")
   const [notasPedido, setNotasPedido] = useState<NotaPedido[]>([])
   const [notaSeleccionada, setNotaSeleccionada] = useState<NotaPedido | null>(null)
 
-  const [laminasCorte, setLaminasCorte] = useState<LaminaCorte[]>([])
-  const [laminaEnProceso, setLaminaEnProceso] = useState<number | null>(null)
-  const [laminaPausada, setLaminaPausada] = useState<number | null>(null)
-  const [tiempoActual, setTiempoActual] = useState(0)
-  const intervalRef = useRef<NodeJS.Timeout | null>(null) // Keep this for corte timing
+  const [laminasCorte, setLaminasCorte] = useState<LaminaCorteLocal[]>([])
+  const [laminasEnProceso, setLaminasEnProceso] = useState<Set<number>>(new Set())
+  const [tiemposLaminas, setTiemposLaminas] = useState<Map<number, LaminaTimerState>>(new Map())
+  const intervalRef = useRef<NodeJS.Timeout | null>(null)
 
-  const [enchapesRegistro, setEnchapesRegistro] = useState<EnchapeRegistro[]>([])
+  const [enchapesRegistro, setEnchapesRegistro] = useState<EnchapeRegistroLocal[]>([])
   const [enchapeEnProceso, setEnchapeEnProceso] = useState<"rigido" | "flexible" | null>(null)
-  const [enchapePausado, setEnchapePausado] = useState<"rigido" | "flexible" | null>(null)
   const [tiempoEnchapeActual, setTiempoEnchapeActual] = useState(0)
-  const intervalEnchapeRef = useRef<NodeJS.Timeout | null>(null) // Keep this for enchape timing
+  const [tiempoPausadoEnchapeActual, setTiempoPausadoEnchapeActual] = useState(0)
+  const intervalEnchapeRef = useRef<NodeJS.Timeout | null>(null)
 
   const [diaSeleccionado, setDiaSeleccionado] = useState<string>("todos")
 
-  const [imagenVisualizacion, setImagenVisualizacion] = useState<string | null>(null) // Keep this for dialog
+  const [turnoActivo, setTurnoActivo] = useState<Turno | null>(null)
+
+  // Cargar notas desde Supabase
+  const cargarNotas = useCallback(async () => {
+    const { data, error } = await supabase
+      .from("notas_pedido")
+      .select("*")
+      .not("estado", "in", '("completado","cerrado")')
+      .order("fecha_corte", { ascending: true })
+
+    if (!error && data) {
+      setNotasPedido(data as NotaPedido[])
+    }
+  }, [supabase])
+
+  // Cargar turno activo
+  const cargarTurnoActivo = useCallback(async () => {
+    if (!user) return
+
+    const hoy = new Date().toISOString().split("T")[0]
+    const { data } = await supabase
+      .from("turnos")
+      .select("*")
+      .eq("cortador_id", user.id)
+      .eq("fecha", hoy)
+      .eq("estado", "activo")
+      .single()
+
+    if (data) {
+      setTurnoActivo(data as Turno)
+    }
+  }, [supabase, user])
 
   useEffect(() => {
     cargarNotas()
-    const interval = setInterval(cargarNotas, 2000)
+    cargarTurnoActivo()
+    const interval = setInterval(cargarNotas, 5000)
     return () => clearInterval(interval)
-  }, [])
+  }, [cargarNotas, cargarTurnoActivo])
 
   useEffect(() => {
-    if (laminaEnProceso !== null && !laminaPausada) {
-      const lamina = laminasCorte.find((l) => l.numero === laminaEnProceso)
-      if (lamina?.horaInicio) {
-        intervalRef.current = setInterval(() => {
-          const tiempoTranscurrido = Math.floor((new Date().getTime() - lamina.horaInicio!.getTime()) / 1000)
-          setTiempoActual(tiempoTranscurrido)
-        }, 1000)
-      }
+    if (laminasEnProceso.size > 0) {
+      intervalRef.current = setInterval(() => {
+        const ahora = new Date()
+        const nuevosTiempos = new Map<number, LaminaTimerState>()
+
+        laminasEnProceso.forEach((numeroLamina) => {
+          const lamina = laminasCorte.find((l) => l.numero === numeroLamina)
+          if (lamina?.horaInicio) {
+            if (lamina.estado === "pausado" && lamina.pausaActual) {
+              const tiempoPausaActual = Math.floor((ahora.getTime() - lamina.pausaActual.getTime()) / 1000)
+              nuevosTiempos.set(numeroLamina, {
+                tiempoActual: 0,
+                tiempoPausado: lamina.tiempoPausado + tiempoPausaActual,
+              })
+            } else if (lamina.estado === "en_proceso") {
+              const tiempoTranscurrido = Math.floor((ahora.getTime() - lamina.horaInicio!.getTime()) / 1000)
+              nuevosTiempos.set(numeroLamina, {
+                tiempoActual: tiempoTranscurrido - lamina.tiempoPausado,
+                tiempoPausado: lamina.tiempoPausado,
+              })
+            }
+          }
+        })
+
+        setTiemposLaminas(nuevosTiempos)
+      }, 1000)
     } else {
       if (intervalRef.current) {
         clearInterval(intervalRef.current)
         intervalRef.current = null
       }
-      if (!laminaPausada) {
-        setTiempoActual(0) // Reset when not paused and not in process
-      }
+      setTiemposLaminas(new Map())
     }
 
     return () => {
@@ -80,15 +152,24 @@ export function CortadorView() {
         clearInterval(intervalRef.current)
       }
     }
-  }, [laminaEnProceso, laminaPausada, laminasCorte])
+  }, [laminasEnProceso, laminasCorte])
 
+  // Timer para enchape en proceso
   useEffect(() => {
-    if (enchapeEnProceso && !enchapePausado) {
+    if (enchapeEnProceso) {
       const enchape = enchapesRegistro.find((e) => e.tipo === enchapeEnProceso)
       if (enchape?.horaInicio) {
         intervalEnchapeRef.current = setInterval(() => {
-          const tiempoTranscurrido = Math.floor((new Date().getTime() - enchape.horaInicio!.getTime()) / 1000)
-          setTiempoEnchapeActual(tiempoTranscurrido)
+          const ahora = new Date()
+
+          if (enchape.estado === "pausado" && enchape.pausaActual) {
+            const tiempoPausaActual = Math.floor((ahora.getTime() - enchape.pausaActual.getTime()) / 1000)
+            setTiempoPausadoEnchapeActual(enchape.tiempoPausado + tiempoPausaActual)
+          } else if (enchape.estado === "en_proceso") {
+            const tiempoTranscurrido = Math.floor((ahora.getTime() - enchape.horaInicio!.getTime()) / 1000)
+            setTiempoEnchapeActual(tiempoTranscurrido - enchape.tiempoPausado)
+            setTiempoPausadoEnchapeActual(enchape.tiempoPausado)
+          }
         }, 1000)
       }
     } else {
@@ -96,102 +177,421 @@ export function CortadorView() {
         clearInterval(intervalEnchapeRef.current)
         intervalEnchapeRef.current = null
       }
+      setTiempoEnchapeActual(0)
+      setTiempoPausadoEnchapeActual(0)
     }
     return () => {
       if (intervalEnchapeRef.current) {
         clearInterval(intervalEnchapeRef.current)
       }
     }
-  }, [enchapeEnProceso, enchapePausado, enchapesRegistro])
+  }, [enchapeEnProceso, enchapesRegistro])
 
-  const cargarNotas = () => {
-    const notas = controller.obtenerNotasPendientes()
-    setNotasPedido(notas)
+  const handleIniciarTurno = async () => {
+    if (!user) return
+
+    const hoy = new Date().toISOString().split("T")[0]
+
+    const { data, error } = await supabase
+      .from("turnos")
+      .insert({
+        cortador_id: user.id,
+        fecha: hoy,
+        hora_inicio: new Date().toISOString(),
+        duracion_turno: 28800,
+        tiempo_activo: 0,
+        tiempo_pausado: 0,
+        tiempo_muerto: 0,
+        estado: "activo",
+      })
+      .select()
+      .single()
+
+    if (!error && data) {
+      setTurnoActivo(data as Turno)
+    }
   }
 
-  const handleSeleccionarNota = (nota: NotaPedido) => {
+  const handleFinalizarTurno = async () => {
+    if (!turnoActivo) return
+
+    const horaFin = new Date()
+    const horaInicio = new Date(turnoActivo.hora_inicio)
+    const duracionReal = Math.floor((horaFin.getTime() - horaInicio.getTime()) / 1000)
+    const tiempoMuerto = Math.max(0, duracionReal - turnoActivo.tiempo_activo - turnoActivo.tiempo_pausado)
+
+    await supabase
+      .from("turnos")
+      .update({
+        hora_fin: horaFin.toISOString(),
+        tiempo_muerto: tiempoMuerto,
+        estado: "finalizado",
+      })
+      .eq("id", turnoActivo.id)
+
+    setTurnoActivo(null)
+  }
+
+  const handleSeleccionarNota = async (nota: NotaPedido) => {
     console.log("[v0] Nota seleccionada:", nota)
     setNotaSeleccionada(nota)
 
-    const laminas: LaminaCorte[] = Array.from({ length: nota.cantidadTableros }, (_, i) => ({
-      numero: i + 1,
-      estado: "sin_iniciar" as const,
-      horaInicio: null,
-      horaFin: null,
-      tiempoTotal: 0,
-    }))
+    // Cargar registros de corte existentes o crear nuevos
+    const { data: registrosCorte } = await supabase
+      .from("registros_corte")
+      .select("*")
+      .eq("nota_id", nota.id)
+      .order("numero_lamina")
 
-    console.log("[v0] Láminas creadas:", laminas)
-    setLaminasCorte(laminas)
+    if (registrosCorte && registrosCorte.length > 0) {
+      // Cargar pausas activas para restaurar estado
+      const registrosConPausa = await Promise.all(
+        registrosCorte.map(async (r: RegistroCorte) => {
+          let pausaActual: Date | null = null
+          
+          // Si está pausado, buscar la pausa activa
+          if (r.estado === "pausado") {
+            const { data: pausaActiva } = await supabase
+              .from("pausas")
+              .select("*")
+              .eq("registro_corte_id", r.id)
+              .is("hora_fin", null)
+              .single()
+            
+            if (pausaActiva) {
+              pausaActual = new Date(pausaActiva.hora_inicio)
+            }
+          }
+          
+          return {
+            id: r.id,
+            numero: r.numero_lamina,
+            estado: r.estado,
+            horaInicio: r.hora_inicio ? new Date(r.hora_inicio) : null,
+            horaFin: r.hora_fin ? new Date(r.hora_fin) : null,
+            tiempoTotal: r.tiempo_total || 0,
+            tiempoPausado: r.tiempo_pausado || 0,
+            pausaActual,
+          }
+        })
+      )
+      
+      const laminas: LaminaCorteLocal[] = registrosConPausa
+      setLaminasCorte(laminas)
 
-    const enchapes: EnchapeRegistro[] = []
-    if (nota.cantoRigido > 0) {
-      enchapes.push({
-        tipo: "rigido",
-        estado: "sin_iniciar",
-        horaInicio: null,
-        horaFin: null,
-        tiempoTotal: 0,
+      const laminasActivas = new Set<number>()
+      laminas.forEach((l) => {
+        if (l.estado === "en_proceso" || l.estado === "pausado") {
+          laminasActivas.add(l.numero)
+        }
       })
-    }
-    if (nota.cantoFlexible > 0) {
-      enchapes.push({
-        tipo: "flexible",
-        estado: "sin_iniciar",
-        horaInicio: null,
-        horaFin: null,
-        tiempoTotal: 0,
-      })
-    }
-    setEnchapesRegistro(enchapes)
+      setLaminasEnProceso(laminasActivas)
+    } else {
+      // Crear nuevos registros
+      const nuevosRegistros = Array.from({ length: nota.cantidad_laminas }, (_, i) => ({
+        nota_id: nota.id,
+        numero_lamina: i + 1,
+        estado: "pendiente" as const,
+        tiempo_pausado: 0,
+      }))
 
-    if (!nota.corteCompletado) {
+      const { data: insertados } = await supabase.from("registros_corte").insert(nuevosRegistros).select()
+
+      if (insertados) {
+        const laminas: LaminaCorteLocal[] = insertados.map((r: RegistroCorte) => ({
+          id: r.id,
+          numero: r.numero_lamina,
+          estado: "pendiente" as const,
+          horaInicio: null,
+          horaFin: null,
+          tiempoTotal: 0,
+          tiempoPausado: 0,
+          pausaActual: null,
+        }))
+        setLaminasCorte(laminas)
+      }
+      setLaminasEnProceso(new Set())
+    }
+
+    // Cargar registros de enchape existentes o crear nuevos
+    const { data: registrosEnchape } = await supabase.from("registros_enchape").select("*").eq("nota_id", nota.id)
+
+    if (registrosEnchape && registrosEnchape.length > 0) {
+      // Cargar pausas activas para restaurar estado de enchapes
+      const enchapesConPausa = await Promise.all(
+        registrosEnchape.map(async (r: RegistroEnchape) => {
+          let pausaActual: Date | null = null
+          
+          // Si está pausado, buscar la pausa activa
+          if (r.estado === "pausado") {
+            const { data: pausaActiva } = await supabase
+              .from("pausas")
+              .select("*")
+              .eq("registro_enchape_id", r.id)
+              .is("hora_fin", null)
+              .single()
+            
+            if (pausaActiva) {
+              pausaActual = new Date(pausaActiva.hora_inicio)
+            }
+          }
+          
+          return {
+            id: r.id,
+            tipo: r.tipo,
+            estado: r.estado,
+            horaInicio: r.hora_inicio ? new Date(r.hora_inicio) : null,
+            horaFin: r.hora_fin ? new Date(r.hora_fin) : null,
+            tiempoTotal: r.tiempo_total || 0,
+            tiempoPausado: r.tiempo_pausado || 0,
+            pausaActual,
+          }
+        })
+      )
+      
+      const enchapes: EnchapeRegistroLocal[] = enchapesConPausa
+      setEnchapesRegistro(enchapes)
+      
+      // Restaurar enchape en proceso si existe
+      const enchapeActivo = enchapes.find((e) => e.estado === "en_proceso" || e.estado === "pausado")
+      if (enchapeActivo) {
+        setEnchapeEnProceso(enchapeActivo.tipo)
+      }
+    } else {
+      const nuevosEnchapes: Array<{
+        nota_id: string
+        tipo: "rigido" | "flexible"
+        estado: "pendiente"
+        tiempo_pausado: number
+      }> = []
+      if (nota.canto_rigido > 0) {
+        nuevosEnchapes.push({ nota_id: nota.id, tipo: "rigido", estado: "pendiente", tiempo_pausado: 0 })
+      }
+      if (nota.canto_flexible > 0) {
+        nuevosEnchapes.push({ nota_id: nota.id, tipo: "flexible", estado: "pendiente", tiempo_pausado: 0 })
+      }
+
+      if (nuevosEnchapes.length > 0) {
+        const { data: insertados } = await supabase.from("registros_enchape").insert(nuevosEnchapes).select()
+
+        if (insertados) {
+          const enchapes: EnchapeRegistroLocal[] = insertados.map((r: RegistroEnchape) => ({
+            id: r.id,
+            tipo: r.tipo,
+            estado: "pendiente" as const,
+            horaInicio: null,
+            horaFin: null,
+            tiempoTotal: 0,
+            tiempoPausado: 0,
+            pausaActual: null,
+          }))
+          setEnchapesRegistro(enchapes)
+        }
+      } else {
+        setEnchapesRegistro([])
+      }
+    }
+
+    if (!nota.corte_completado) {
       setVistaActual("seleccion")
     } else {
       setVistaActual("enchape")
     }
   }
 
-  const handleIniciarCorte = () => {
+  const handleIniciarCorte = async () => {
     if (!notaSeleccionada || !user) return
     console.log("[v0] Iniciando proceso de corte")
-    controller.iniciarProcesoCorte(notaSeleccionada.id, user.id, user.nombre)
+
+    await supabase
+      .from("notas_pedido")
+      .update({
+        estado: "en_corte",
+        cortador_asignado: user.id,
+        cortador_nombre: user.nombre,
+        fecha_inicio_proceso: new Date().toISOString(),
+      })
+      .eq("id", notaSeleccionada.id)
+
     setVistaActual("corte")
   }
 
-  const handleIniciarLamina = (numeroLamina: number) => {
+  const handleIniciarLamina = async (numeroLamina: number) => {
     console.log("[v0] Iniciando lámina:", numeroLamina)
+    const lamina = laminasCorte.find((l) => l.numero === numeroLamina)
+    if (!lamina) return
+
+    const ahora = new Date()
+
+    // Actualizar en Supabase
+    await supabase
+      .from("registros_corte")
+      .update({
+        estado: "en_proceso",
+        hora_inicio: ahora.toISOString(),
+        cortador_id: user?.id,
+      })
+      .eq("id", lamina.id)
+
     setLaminasCorte((prev) =>
       prev.map((l) =>
         l.numero === numeroLamina
           ? {
               ...l,
               estado: "en_proceso" as const,
-              horaInicio: new Date(),
+              horaInicio: ahora,
             }
           : l,
       ),
     )
-    setLaminaEnProceso(numeroLamina)
-    setLaminaPausada(null) // Ensure not paused when starting
+
+    // Agregar a láminas en proceso
+    setLaminasEnProceso((prev) => new Set(prev).add(numeroLamina))
   }
 
-  const handlePausarLamina = (numeroLamina: number) => {
+  const handlePausarLamina = async (numeroLamina: number) => {
     console.log("[v0] Pausando lámina:", numeroLamina)
-    setLaminaPausada(numeroLamina)
+    const lamina = laminasCorte.find((l) => l.numero === numeroLamina)
+    if (!lamina) return
+
+    const ahora = new Date()
+
+    // Registrar pausa en Supabase
+    await supabase.from("pausas").insert({
+      registro_corte_id: lamina.id,
+      hora_inicio: ahora.toISOString(),
+    })
+
+    await supabase.from("registros_corte").update({ estado: "pausado" }).eq("id", lamina.id)
+
+    setLaminasCorte((prev) =>
+      prev.map((l) =>
+        l.numero === numeroLamina
+          ? {
+              ...l,
+              estado: "pausado" as const,
+              pausaActual: ahora,
+            }
+          : l,
+      ),
+    )
   }
 
-  const handleContinuarLamina = (numeroLamina: number) => {
-    console.log("[v0] Continuing lámina:", numeroLamina)
-    setLaminaPausada(null) // Clear pause state
+  const handleContinuarLamina = async (numeroLamina: number) => {
+    console.log("[v0] Continuando lámina:", numeroLamina)
+    const lamina = laminasCorte.find((l) => l.numero === numeroLamina)
+    if (!lamina || !lamina.pausaActual) return
+
+    const ahora = new Date()
+    const duracionPausa = Math.floor((ahora.getTime() - lamina.pausaActual.getTime()) / 1000)
+    const nuevoTiempoPausado = lamina.tiempoPausado + duracionPausa
+
+    // Finalizar pausa en Supabase
+    const { data: pausaActiva } = await supabase
+      .from("pausas")
+      .select("*")
+      .eq("registro_corte_id", lamina.id)
+      .is("hora_fin", null)
+      .single()
+
+    if (pausaActiva) {
+      await supabase
+        .from("pausas")
+        .update({
+          hora_fin: ahora.toISOString(),
+          duracion: duracionPausa,
+        })
+        .eq("id", pausaActiva.id)
+    }
+
+    await supabase
+      .from("registros_corte")
+      .update({
+        estado: "en_proceso",
+        tiempo_pausado: nuevoTiempoPausado,
+      })
+      .eq("id", lamina.id)
+
+    setLaminasCorte((prev) =>
+      prev.map((l) =>
+        l.numero === numeroLamina
+          ? {
+              ...l,
+              estado: "en_proceso" as const,
+              tiempoPausado: nuevoTiempoPausado,
+              pausaActual: null,
+            }
+          : l,
+      ),
+    )
   }
 
-  const handleDetenerLamina = (numeroLamina: number) => {
+  const handleDetenerLamina = async (numeroLamina: number) => {
     console.log("[v0] Finalizando lámina:", numeroLamina)
     const lamina = laminasCorte.find((l) => l.numero === numeroLamina)
     if (!lamina || !lamina.horaInicio) return
 
-    const tiempoTotal = Math.floor((new Date().getTime() - lamina.horaInicio.getTime()) / 1000)
+    const ahora = new Date()
+
+    // Si estaba pausado, calcular tiempo de pausa final
+    let tiempoPausadoFinal = lamina.tiempoPausado
+    if (lamina.pausaActual) {
+      const duracionPausaFinal = Math.floor((ahora.getTime() - lamina.pausaActual.getTime()) / 1000)
+      tiempoPausadoFinal += duracionPausaFinal
+
+      // Finalizar pausa activa
+      const { data: pausaActiva } = await supabase
+        .from("pausas")
+        .select("*")
+        .eq("registro_corte_id", lamina.id)
+        .is("hora_fin", null)
+        .single()
+
+      if (pausaActiva) {
+        await supabase
+          .from("pausas")
+          .update({
+            hora_fin: ahora.toISOString(),
+            duracion: duracionPausaFinal,
+          })
+          .eq("id", pausaActiva.id)
+      }
+    }
+
+    const tiempoTotalBruto = Math.floor((ahora.getTime() - lamina.horaInicio.getTime()) / 1000)
+    const tiempoTotalNeto = tiempoTotalBruto - tiempoPausadoFinal
+
+    // Actualizar en Supabase
+    await supabase
+      .from("registros_corte")
+      .update({
+        estado: "completado",
+        hora_fin: ahora.toISOString(),
+        tiempo_total: tiempoTotalNeto,
+        tiempo_pausado: tiempoPausadoFinal,
+      })
+      .eq("id", lamina.id)
+
+    // Actualizar tiempo activo del turno
+    if (turnoActivo) {
+      await supabase
+        .from("turnos")
+        .update({
+          tiempo_activo: turnoActivo.tiempo_activo + tiempoTotalNeto,
+          tiempo_pausado: turnoActivo.tiempo_pausado + tiempoPausadoFinal,
+        })
+        .eq("id", turnoActivo.id)
+
+      setTurnoActivo((prev) =>
+        prev
+          ? {
+              ...prev,
+              tiempo_activo: prev.tiempo_activo + tiempoTotalNeto,
+              tiempo_pausado: prev.tiempo_pausado + tiempoPausadoFinal,
+            }
+          : null,
+      )
+    }
 
     setLaminasCorte((prev) =>
       prev.map((l) =>
@@ -199,26 +599,53 @@ export function CortadorView() {
           ? {
               ...l,
               estado: "completado" as const,
-              horaFin: new Date(),
-              tiempoTotal,
+              horaFin: ahora,
+              tiempoTotal: tiempoTotalNeto,
+              tiempoPausado: tiempoPausadoFinal,
+              pausaActual: null,
             }
           : l,
       ),
     )
-    setLaminaEnProceso(null)
-    setLaminaPausada(null)
-    setTiempoActual(0) // Reset timer
+
+    // Remover de láminas en proceso
+    setLaminasEnProceso((prev) => {
+      const newSet = new Set(prev)
+      newSet.delete(numeroLamina)
+      return newSet
+    })
   }
 
-  const handleFinalizarCorte = () => {
+  const handleFinalizarCorte = async () => {
     console.log("[v0] Finalizando corte completo")
     if (!notaSeleccionada) return
 
-    const tiempoTotal = laminasCorte.reduce((total, lamina) => total + (lamina.tiempoTotal || 0), 0)
+    const tiempoTotalNeto = laminasCorte.reduce((total, lamina) => total + (lamina.tiempoTotal || 0), 0)
+    const tiempoTotalPausado = laminasCorte.reduce((total, lamina) => total + (lamina.tiempoPausado || 0), 0)
 
-    controller.finalizarProcesoCorte(notaSeleccionada.id, tiempoTotal)
+    await supabase
+      .from("notas_pedido")
+      .update({
+        tiempo_corte: tiempoTotalNeto,
+        tiempo_pausado_corte: tiempoTotalPausado,
+        fecha_fin_corte: new Date().toISOString(),
+        corte_completado: true,
+        estado: "cortado",
+      })
+      .eq("id", notaSeleccionada.id)
 
-    const requiereEnchape = notaSeleccionada.cantoRigido > 0 || notaSeleccionada.cantoFlexible > 0
+    if (user?.es_baseline) {
+      await actualizarBaseline(
+        "corte",
+        tiempoTotalNeto,
+        notaSeleccionada.tipo_material,
+        notaSeleccionada.cantidad_laminas,
+      )
+    }
+
+    const requiereEnchape = notaSeleccionada.canto_rigido > 0 || notaSeleccionada.canto_flexible > 0
+
+    setLaminasEnProceso(new Set())
 
     if (requiereEnchape) {
       setVistaActual("enchape")
@@ -229,45 +656,186 @@ export function CortadorView() {
     }
   }
 
-  const handleIniciarEnchape = () => {
-    if (!notaSeleccionada) return
-    console.log("[v0] Iniciando proceso de enchape")
-    controller.iniciarProcesoEnchape(notaSeleccionada.id)
-  }
-
-  const handleIniciarEnchapeRegistro = (tipo: "rigido" | "flexible") => {
+  // Funciones de enchape similares con tracking de pausas
+  const handleIniciarEnchapeRegistro = async (tipo: "rigido" | "flexible") => {
     console.log("[v0] Iniciando enchape:", tipo)
+    const enchape = enchapesRegistro.find((e) => e.tipo === tipo)
+    if (!enchape) return
+
+    const ahora = new Date()
+
+    await supabase
+      .from("registros_enchape")
+      .update({
+        estado: "en_proceso",
+        hora_inicio: ahora.toISOString(),
+        cortador_id: user?.id,
+      })
+      .eq("id", enchape.id)
+
+    // Actualizar estado de la nota si es el primer enchape
+    if (!notaSeleccionada?.fecha_inicio_enchape) {
+      await supabase
+        .from("notas_pedido")
+        .update({
+          estado: "en_enchape",
+          fecha_inicio_enchape: ahora.toISOString(),
+        })
+        .eq("id", notaSeleccionada?.id)
+    }
+
     setEnchapesRegistro((prev) =>
       prev.map((e) =>
         e.tipo === tipo
           ? {
               ...e,
               estado: "en_proceso" as const,
-              horaInicio: new Date(),
+              horaInicio: ahora,
             }
           : e,
       ),
     )
     setEnchapeEnProceso(tipo)
-    setEnchapePausado(null) // Ensure not paused when starting
   }
 
-  const handlePausarEnchape = (tipo: "rigido" | "flexible") => {
+  const handlePausarEnchape = async (tipo: "rigido" | "flexible") => {
     console.log("[v0] Pausando enchape:", tipo)
-    setEnchapePausado(tipo)
+    const enchape = enchapesRegistro.find((e) => e.tipo === tipo)
+    if (!enchape) return
+
+    const ahora = new Date()
+
+    await supabase.from("pausas").insert({
+      registro_enchape_id: enchape.id,
+      hora_inicio: ahora.toISOString(),
+    })
+
+    await supabase.from("registros_enchape").update({ estado: "pausado" }).eq("id", enchape.id)
+
+    setEnchapesRegistro((prev) =>
+      prev.map((e) =>
+        e.tipo === tipo
+          ? {
+              ...e,
+              estado: "pausado" as const,
+              pausaActual: ahora,
+            }
+          : e,
+      ),
+    )
   }
 
-  const handleContinuarEnchape = (tipo: "rigido" | "flexible") => {
-    console.log("[v0] Continuing enchape:", tipo)
-    setEnchapePausado(null) // Clear pause state
+  const handleContinuarEnchape = async (tipo: "rigido" | "flexible") => {
+    console.log("[v0] Continuando enchape:", tipo)
+    const enchape = enchapesRegistro.find((e) => e.tipo === tipo)
+    if (!enchape || !enchape.pausaActual) return
+
+    const ahora = new Date()
+    const duracionPausa = Math.floor((ahora.getTime() - enchape.pausaActual.getTime()) / 1000)
+    const nuevoTiempoPausado = enchape.tiempoPausado + duracionPausa
+
+    const { data: pausaActiva } = await supabase
+      .from("pausas")
+      .select("*")
+      .eq("registro_enchape_id", enchape.id)
+      .is("hora_fin", null)
+      .single()
+
+    if (pausaActiva) {
+      await supabase
+        .from("pausas")
+        .update({
+          hora_fin: ahora.toISOString(),
+          duracion: duracionPausa,
+        })
+        .eq("id", pausaActiva.id)
+    }
+
+    await supabase
+      .from("registros_enchape")
+      .update({
+        estado: "en_proceso",
+        tiempo_pausado: nuevoTiempoPausado,
+      })
+      .eq("id", enchape.id)
+
+    setEnchapesRegistro((prev) =>
+      prev.map((e) =>
+        e.tipo === tipo
+          ? {
+              ...e,
+              estado: "en_proceso" as const,
+              tiempoPausado: nuevoTiempoPausado,
+              pausaActual: null,
+            }
+          : e,
+      ),
+    )
   }
 
-  const handleDetenerEnchape = (tipo: "rigido" | "flexible") => {
+  const handleDetenerEnchape = async (tipo: "rigido" | "flexible") => {
     console.log("[v0] Finalizando enchape:", tipo)
     const enchape = enchapesRegistro.find((e) => e.tipo === tipo)
     if (!enchape || !enchape.horaInicio) return
 
-    const tiempoTotal = Math.floor((new Date().getTime() - enchape.horaInicio.getTime()) / 1000)
+    const ahora = new Date()
+
+    let tiempoPausadoFinal = enchape.tiempoPausado
+    if (enchape.pausaActual) {
+      const duracionPausaFinal = Math.floor((ahora.getTime() - enchape.pausaActual.getTime()) / 1000)
+      tiempoPausadoFinal += duracionPausaFinal
+
+      const { data: pausaActiva } = await supabase
+        .from("pausas")
+        .select("*")
+        .eq("registro_enchape_id", enchape.id)
+        .is("hora_fin", null)
+        .single()
+
+      if (pausaActiva) {
+        await supabase
+          .from("pausas")
+          .update({
+            hora_fin: ahora.toISOString(),
+            duracion: duracionPausaFinal,
+          })
+          .eq("id", pausaActiva.id)
+      }
+    }
+
+    const tiempoTotalBruto = Math.floor((ahora.getTime() - enchape.horaInicio.getTime()) / 1000)
+    const tiempoTotalNeto = tiempoTotalBruto - tiempoPausadoFinal
+
+    await supabase
+      .from("registros_enchape")
+      .update({
+        estado: "completado",
+        hora_fin: ahora.toISOString(),
+        tiempo_total: tiempoTotalNeto,
+        tiempo_pausado: tiempoPausadoFinal,
+      })
+      .eq("id", enchape.id)
+
+    // Actualizar tiempo activo del turno
+    if (turnoActivo) {
+      await supabase
+        .from("turnos")
+        .update({
+          tiempo_activo: turnoActivo.tiempo_activo + tiempoTotalNeto,
+          tiempo_pausado: turnoActivo.tiempo_pausado + tiempoPausadoFinal,
+        })
+        .eq("id", turnoActivo.id)
+
+      setTurnoActivo((prev) =>
+        prev
+          ? {
+              ...prev,
+              tiempo_activo: prev.tiempo_activo + tiempoTotalNeto,
+              tiempo_pausado: prev.tiempo_pausado + tiempoPausadoFinal,
+            }
+          : null,
+      )
+    }
 
     setEnchapesRegistro((prev) =>
       prev.map((e) =>
@@ -275,29 +843,94 @@ export function CortadorView() {
           ? {
               ...e,
               estado: "completado" as const,
-              horaFin: new Date(),
-              tiempoTotal,
+              horaFin: ahora,
+              tiempoTotal: tiempoTotalNeto,
+              tiempoPausado: tiempoPausadoFinal,
+              pausaActual: null,
             }
           : e,
       ),
     )
     setEnchapeEnProceso(null)
-    setEnchapePausado(null)
-    setTiempoEnchapeActual(0) // Reset timer
+    setTiempoEnchapeActual(0)
+    setTiempoPausadoEnchapeActual(0)
   }
 
-  const handleFinalizarEnchape = () => {
+  const handleFinalizarEnchape = async () => {
     console.log("[v0] Finalizando enchape completo")
     if (!notaSeleccionada) return
 
     const tiempoRigido = enchapesRegistro.find((e) => e.tipo === "rigido")?.tiempoTotal || 0
     const tiempoFlexible = enchapesRegistro.find((e) => e.tipo === "flexible")?.tiempoTotal || 0
+    const tiempoTotalPausado = enchapesRegistro.reduce((total, e) => total + (e.tiempoPausado || 0), 0)
 
-    controller.finalizarProcesoEnchape(notaSeleccionada.id, tiempoRigido, tiempoFlexible)
+    await supabase
+      .from("notas_pedido")
+      .update({
+        tiempo_enchape_rigido: tiempoRigido,
+        tiempo_enchape_flexible: tiempoFlexible,
+        tiempo_pausado_enchape: tiempoTotalPausado,
+        fecha_fin_enchape: new Date().toISOString(),
+        enchape_completado: true,
+        estado: "completado",
+      })
+      .eq("id", notaSeleccionada.id)
+
+    if (user?.es_baseline) {
+      if (tiempoRigido > 0) {
+        await actualizarBaseline("enchape_rigido", tiempoRigido)
+      }
+      if (tiempoFlexible > 0) {
+        await actualizarBaseline("enchape_flexible", tiempoFlexible)
+      }
+    }
 
     cargarNotas()
     setVistaActual("lista")
     setNotaSeleccionada(null)
+  }
+
+  const actualizarBaseline = async (
+    tipoOperacion: "corte" | "enchape_rigido" | "enchape_flexible",
+    tiempoNuevo: number,
+    tipoMaterial?: string,
+    cantidadLaminas?: number,
+  ) => {
+    const { data: existente } = await supabase
+      .from("metricas_baseline")
+      .select("*")
+      .eq("tipo_operacion", tipoOperacion)
+      .maybeSingle()
+
+    if (existente) {
+      const nuevoPromedio = Math.round(
+        (existente.tiempo_promedio * existente.muestras + tiempoNuevo) / (existente.muestras + 1),
+      )
+      const nuevoMinimo = existente.tiempo_minimo ? Math.min(existente.tiempo_minimo, tiempoNuevo) : tiempoNuevo
+      const nuevoMaximo = existente.tiempo_maximo ? Math.max(existente.tiempo_maximo, tiempoNuevo) : tiempoNuevo
+
+      await supabase
+        .from("metricas_baseline")
+        .update({
+          tiempo_promedio: nuevoPromedio,
+          tiempo_minimo: nuevoMinimo,
+          tiempo_maximo: nuevoMaximo,
+          muestras: existente.muestras + 1,
+          fecha_actualizacion: new Date().toISOString(),
+        })
+        .eq("id", existente.id)
+    } else {
+      await supabase.from("metricas_baseline").insert({
+        tipo_operacion: tipoOperacion,
+        tipo_material: tipoMaterial || null,
+        cantidad_laminas: cantidadLaminas || null,
+        tiempo_promedio: tiempoNuevo,
+        tiempo_minimo: tiempoNuevo,
+        tiempo_maximo: tiempoNuevo,
+        muestras: 1,
+        usuario_baseline_id: user?.id || null,
+      })
+    }
   }
 
   const formatearTiempo = (segundos: number): string => {
@@ -311,7 +944,7 @@ export function CortadorView() {
     return `${minutos}m ${segs}s`
   }
 
-  const obtenerDiaSemana = (fecha: Date) => {
+  const obtenerDiaSemana = (fecha: string) => {
     const dias = ["Domingo", "Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado"]
     return dias[new Date(fecha).getDay()]
   }
@@ -319,31 +952,44 @@ export function CortadorView() {
   const estaRetrasada = (nota: NotaPedido) => {
     const hoy = new Date()
     hoy.setHours(0, 0, 0, 0)
-    const fechaCorte = new Date(nota.fechaCorte)
+    const fechaCorte = new Date(nota.fecha_corte)
     fechaCorte.setHours(0, 0, 0, 0)
 
     return fechaCorte < hoy && nota.estado !== "completado" && nota.estado !== "cerrado"
   }
 
+  const getPrioridadColor = (tipoEntrega: NotaPedido["tipo_entrega"]) => {
+    switch (tipoEntrega) {
+      case "domicilio":
+        return "text-red-500"
+      case "retiro":
+        return "text-yellow-500"
+      case "portable":
+        return "text-green-500"
+      default:
+        return "text-muted-foreground"
+    }
+  }
+
+  const getTipoEntregaLabel = (tipoEntrega: NotaPedido["tipo_entrega"]) => {
+    switch (tipoEntrega) {
+      case "domicilio":
+        return "Domicilio"
+      case "retiro":
+        return "Retiro"
+      case "portable":
+        return "Portable"
+      default:
+        return ""
+    }
+  }
+
   const notasFiltradas =
     diaSeleccionado === "todos"
       ? notasPedido
-      : notasPedido.filter((nota) => obtenerDiaSemana(nota.fechaCorte) === diaSeleccionado)
+      : notasPedido.filter((nota) => obtenerDiaSemana(nota.fecha_corte) === diaSeleccionado)
 
-  const notasRetrasadas = notasPedido.filter(estaRetrasada).length // Corrected to use notasPedido
-
-  const obtenerBadgeEstado = (nota: NotaPedido) => {
-    if (nota.estado === "completado" || nota.estado === "cerrado") {
-      return <Badge className="bg-green-600">Completado</Badge>
-    }
-    if (nota.corteCompletado && !nota.enchapeCompletado && (nota.enchapeRigido > 0 || nota.enchapeFlexible > 0)) {
-      return <Badge className="bg-blue-600">Listo para Enchape</Badge>
-    }
-    if (nota.estado === "en_proceso" || nota.estado === "en_corte") {
-      return <Badge variant="default">En Proceso</Badge>
-    }
-    return <Badge variant="secondary">Pendiente</Badge>
-  }
+  const notasRetrasadas = notasPedido.filter(estaRetrasada).length
 
   const descargarArchivo = (archivo: { nombre: string; url: string }) => {
     const link = document.createElement("a")
@@ -354,18 +1000,88 @@ export function CortadorView() {
     document.body.removeChild(link)
   }
 
+  const TurnoPanel = () => {
+    if (!turnoActivo) {
+      return (
+        <Card className="mb-6 border-yellow-500/50 bg-yellow-500/5">
+          <CardContent className="p-4">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <Clock className="h-5 w-5 text-yellow-500" />
+                <div>
+                  <p className="font-medium">No hay turno activo</p>
+                  <p className="text-sm text-muted-foreground">Inicia tu turno para comenzar a registrar tiempos</p>
+                </div>
+              </div>
+              <Button onClick={handleIniciarTurno} className="bg-yellow-500 hover:bg-yellow-600 text-background">
+                <Play className="mr-2 h-4 w-4" />
+                Iniciar Turno
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
+      )
+    }
+
+    const horaInicio = new Date(turnoActivo.hora_inicio)
+    const ahora = new Date()
+    const tiempoTranscurrido = Math.floor((ahora.getTime() - horaInicio.getTime()) / 1000)
+    const tiempoMuertoActual = Math.max(0, tiempoTranscurrido - turnoActivo.tiempo_activo - turnoActivo.tiempo_pausado)
+
+    return (
+      <Card className="mb-6 border-green-500/50 bg-green-500/5">
+        <CardContent className="p-4">
+          <div className="flex items-center justify-between mb-4">
+            <div className="flex items-center gap-3">
+              <Timer className="h-5 w-5 text-green-500" />
+              <div>
+                <p className="font-medium text-green-600">Turno Activo</p>
+                <p className="text-sm text-muted-foreground">
+                  Inicio: {format(horaInicio, "HH:mm")} - {format(new Date(), "dd/MM/yyyy")}
+                </p>
+              </div>
+            </div>
+            <Button onClick={handleFinalizarTurno} variant="outline" size="sm">
+              Finalizar Turno
+            </Button>
+          </div>
+
+          <div className="grid grid-cols-3 gap-4 text-center">
+            <div className="p-3 rounded-lg bg-background">
+              <p className="text-xs text-muted-foreground mb-1">Tiempo Activo</p>
+              <p className="text-lg font-bold text-green-600">{formatearTiempo(turnoActivo.tiempo_activo)}</p>
+            </div>
+            <div className="p-3 rounded-lg bg-background">
+              <p className="text-xs text-muted-foreground mb-1">Tiempo Pausado</p>
+              <p className="text-lg font-bold text-yellow-600">{formatearTiempo(turnoActivo.tiempo_pausado)}</p>
+            </div>
+            <div className="p-3 rounded-lg bg-background">
+              <p className="text-xs text-muted-foreground mb-1">Tiempo Muerto</p>
+              <p className="text-lg font-bold text-red-600">{formatearTiempo(tiempoMuertoActual)}</p>
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+    )
+  }
+
   if (vistaActual === "lista") {
     return (
       <div className="space-y-6">
         <div>
           <h2 className="text-3xl font-bold text-foreground">Panel del Cortador</h2>
           <p className="text-muted-foreground">Bienvenido, {user?.nombre}</p>
+          {user?.es_baseline && (
+            <Badge className="mt-2 bg-blue-500">Usuario Baseline - Tus tiempos se usan como referencia</Badge>
+          )}
           {notasRetrasadas > 0 && (
-            <Badge variant="destructive" className="mt-2">
+            <Badge variant="destructive" className="mt-2 ml-2">
               {notasRetrasadas} nota{notasRetrasadas > 1 ? "s" : ""} retrasada{notasRetrasadas > 1 ? "s" : ""}
             </Badge>
           )}
         </div>
+
+        <TurnoPanel />
 
         <Card>
           <CardHeader>
@@ -413,60 +1129,80 @@ export function CortadorView() {
                   >
                     <CardContent className="p-4">
                       <div className="flex items-start justify-between mb-3">
-                        <div>
-                          <p className="font-bold text-lg">{nota.numero}</p>
-                          <p className="text-sm text-muted-foreground">
-                            {obtenerDiaSemana(nota.fechaCorte)} - {format(nota.fechaCorte, "dd/MM/yyyy")}
-                          </p>
-                          {estaRetrasada(nota) && (
-                            <Badge variant="destructive" className="mt-1 text-xs">
-                              Retrasada
-                            </Badge>
-                          )}
+                        <div className="flex items-center gap-2">
+                          <Bell className={`h-5 w-5 ${getPrioridadColor(nota.tipo_entrega)}`} />
+                          <div>
+                            <p className="font-bold text-lg">{nota.numero}</p>
+                            <p className="text-sm text-muted-foreground">
+                              {obtenerDiaSemana(nota.fecha_corte)} - {format(new Date(nota.fecha_corte), "dd/MM/yyyy")}
+                            </p>
+                            {estaRetrasada(nota) && (
+                              <Badge variant="destructive" className="mt-1 text-xs">
+                                Retrasada
+                              </Badge>
+                            )}
+                          </div>
                         </div>
-                        {/* Replaced old badge logic with the new one */}
                         <Badge
-                          variant={nota.corteCompletado ? "secondary" : "default"}
-                          className={nota.corteCompletado ? "bg-yellow-500" : ""}
+                          variant={nota.corte_completado ? "secondary" : "default"}
+                          className={nota.corte_completado ? "bg-yellow-500 text-background" : ""}
                         >
-                          {nota.corteCompletado ? "Para Enchapar" : "Para Cortar"}
+                          {nota.corte_completado ? "Para Enchapar" : "Para Cortar"}
                         </Badge>
                       </div>
 
                       <div className="space-y-2 text-sm">
                         <div className="flex justify-between">
                           <span className="text-muted-foreground">Asesor:</span>
-                          <span className="font-medium">{nota.asesorNombre}</span>
+                          <span className="font-medium">{nota.asesor_nombre}</span>
                         </div>
                         <div className="flex justify-between">
                           <span className="text-muted-foreground">Láminas:</span>
-                          <span className="font-medium">{nota.cantidadTableros}</span>
+                          <span className="font-medium">{nota.cantidad_laminas}</span>
                         </div>
                         <div className="flex justify-between">
                           <span className="text-muted-foreground">Material:</span>
-                          <span className="font-medium capitalize">{nota.tipoMaterial}</span>
+                          <span className="font-medium capitalize">{nota.tipo_material}</span>
                         </div>
-                        {(nota.enchapeRigido > 0 || nota.enchapeFlexible > 0) && (
+                        <div className="flex justify-between">
+                          <span className="text-muted-foreground">Entrega:</span>
+                          <span className={`font-medium ${getPrioridadColor(nota.tipo_entrega)}`}>
+                            {getTipoEntregaLabel(nota.tipo_entrega)}
+                          </span>
+                        </div>
+                        {nota.cantidad_desplazamientos > 0 && (
+                          <div className="flex justify-between">
+                            <span className="text-muted-foreground">Desplazamientos:</span>
+                            <span className="font-medium">{nota.cantidad_desplazamientos}</span>
+                          </div>
+                        )}
+                        {nota.lleva_perforaciones && (
+                          <div className="flex justify-between">
+                            <span className="text-muted-foreground">Perforaciones:</span>
+                            <span className="font-medium text-orange-500">{nota.cantidad_perforaciones}</span>
+                          </div>
+                        )}
+                        {(nota.canto_rigido > 0 || nota.canto_flexible > 0) && (
                           <>
                             <div className="flex justify-between">
                               <span className="text-muted-foreground">E. Flexible:</span>
-                              <span className="font-medium">{nota.enchapeFlexible}m</span>
+                              <span className="font-medium">{nota.canto_flexible}m</span>
                             </div>
                             <div className="flex justify-between">
                               <span className="text-muted-foreground">E. Rígido:</span>
-                              <span className="font-medium">{nota.enchapeRigido}m</span>
+                              <span className="font-medium">{nota.canto_rigido}m</span>
                             </div>
                           </>
                         )}
                       </div>
 
-                      {nota.archivosPed && nota.archivosPed.length > 0 && (
+                      {nota.archivos_ped && nota.archivos_ped.length > 0 && (
                         <div className="mt-3 pt-3 border-t border-border">
                           <p className="text-xs font-medium text-muted-foreground mb-2">
-                            Planos Lepton ({nota.archivosPed.length}):
+                            Planos Lepton ({nota.archivos_ped.length}):
                           </p>
                           <div className="space-y-1">
-                            {nota.archivosPed.map((archivo, idx) => (
+                            {nota.archivos_ped.map((archivo, idx) => (
                               <Button
                                 key={idx}
                                 variant="outline"
@@ -503,9 +1239,14 @@ export function CortadorView() {
           Volver
         </Button>
 
-        <div>
-          <h2 className="text-2xl font-bold text-foreground">Trabajo en Proceso - {notaSeleccionada?.numero}</h2>
-          <p className="text-muted-foreground">{notaSeleccionada?.asesorNombre}</p>
+        <div className="flex items-center gap-3">
+          <Bell className={`h-6 w-6 ${getPrioridadColor(notaSeleccionada?.tipo_entrega || "retiro")}`} />
+          <div>
+            <h2 className="text-2xl font-bold text-foreground">Trabajo en Proceso - {notaSeleccionada?.numero}</h2>
+            <p className="text-muted-foreground">
+              {notaSeleccionada?.asesor_nombre} - {getTipoEntregaLabel(notaSeleccionada?.tipo_entrega || "retiro")}
+            </p>
+          </div>
         </div>
 
         <div className="grid gap-6 md:grid-cols-2">
@@ -518,7 +1259,17 @@ export function CortadorView() {
                 <div>
                   <h3 className="text-xl font-bold mb-2">Sierra Striebig</h3>
                   <p className="text-sm text-muted-foreground">Módulo de Corte</p>
-                  <p className="text-sm font-medium mt-2">{notaSeleccionada?.cantidadTableros} tableros para cortar</p>
+                  <p className="text-sm font-medium mt-2">{notaSeleccionada?.cantidad_laminas} tableros para cortar</p>
+                  {notaSeleccionada?.cantidad_desplazamientos ? (
+                    <p className="text-xs text-muted-foreground mt-1">
+                      {notaSeleccionada.cantidad_desplazamientos} desplazamientos de sierra
+                    </p>
+                  ) : null}
+                  {notaSeleccionada?.lleva_perforaciones && (
+                    <p className="text-xs text-orange-500 mt-1">
+                      {notaSeleccionada.cantidad_perforaciones} perforaciones
+                    </p>
+                  )}
                 </div>
                 <Button size="lg" className="w-full">
                   Iniciar Corte
@@ -527,13 +1278,7 @@ export function CortadorView() {
             </CardContent>
           </Card>
 
-          <Card
-            className={`border-2 ${
-              notaSeleccionada?.cantoRigido || notaSeleccionada?.cantoFlexible
-                ? "border-border opacity-40" // Adjusted logic and styling
-                : "border-border opacity-40"
-            }`}
-          >
+          <Card className="border-2 border-border opacity-40">
             <CardContent className="p-6 text-center">
               <div className="flex flex-col items-center gap-4">
                 <div className="rounded-full bg-muted p-6">
@@ -542,28 +1287,24 @@ export function CortadorView() {
                 <div>
                   <h3 className="text-xl font-bold mb-2">Enchapadora Fravol</h3>
                   <p className="text-sm text-muted-foreground">Módulo de Enchape</p>
-                  {notaSeleccionada?.cantoRigido || notaSeleccionada?.cantoFlexible ? (
-                    <p className="text-sm font-medium mt-2 text-yellow-600">No requiere enchape</p> // Updated text
-                  ) : (
-                    <p className="text-sm font-medium mt-2 text-muted-foreground">Completar corte primero</p>
-                  )}
+                  <p className="text-sm font-medium mt-2 text-muted-foreground">Completar corte primero</p>
                 </div>
               </div>
             </CardContent>
           </Card>
         </div>
 
-        {notaSeleccionada?.archivosPed && notaSeleccionada?.archivosPed.length > 0 && (
+        {notaSeleccionada?.archivos_ped && notaSeleccionada?.archivos_ped.length > 0 && (
           <div className="mt-4 p-4 bg-yellow-500/10 border border-yellow-500/30 rounded-lg">
             <div className="flex items-center gap-2 mb-3">
               <FileText className="h-5 w-5 text-yellow-500" />
               <h3 className="font-semibold text-yellow-500">Planos de Corte Lepton</h3>
             </div>
             <p className="text-xs text-muted-foreground mb-3">
-              Se encontraron {notaSeleccionada.archivosPed.length} archivo(s) .ped adjuntos
+              Se encontraron {notaSeleccionada.archivos_ped.length} archivo(s) .ped adjuntos
             </p>
             <div className="space-y-2">
-              {notaSeleccionada.archivosPed.map((archivo, idx) => (
+              {notaSeleccionada.archivos_ped.map((archivo, idx) => (
                 <Button
                   key={idx}
                   variant="outline"
@@ -589,6 +1330,7 @@ export function CortadorView() {
 
   if (vistaActual === "corte") {
     const todasCompletas = laminasCorte.every((l) => l.estado === "completado")
+    const laminasActivasCount = laminasEnProceso.size
 
     return (
       <div className="space-y-6">
@@ -597,8 +1339,24 @@ export function CortadorView() {
             <ArrowLeft className="mr-2 h-4 w-4" />
             Volver
           </Button>
-          <h2 className="text-2xl font-bold text-foreground">Proceso de Corte - Sierra Striebig</h2>
-          <p className="text-sm text-muted-foreground">NP: {notaSeleccionada?.numero}</p>
+          <div className="flex items-center gap-3">
+            <Bell className={`h-5 w-5 ${getPrioridadColor(notaSeleccionada?.tipo_entrega || "retiro")}`} />
+            <div>
+              <h2 className="text-2xl font-bold text-foreground">Proceso de Corte - Sierra Striebig</h2>
+  <p className="text-sm text-muted-foreground">
+                  NP: {notaSeleccionada?.numero} - {getTipoEntregaLabel(notaSeleccionada?.tipo_entrega || "retiro")}
+                  {notaSeleccionada?.cantidad_desplazamientos
+                    ? ` - ${notaSeleccionada.cantidad_desplazamientos} desplazamientos`
+                    : ""}
+                  {notaSeleccionada?.lleva_perforaciones
+                    ? ` - ${notaSeleccionada.cantidad_perforaciones} perforaciones`
+                    : ""}
+                  </p>
+            </div>
+          </div>
+          {laminasActivasCount > 0 && (
+            <Badge className="mt-2 bg-blue-500">{laminasActivasCount} corte(s) en proceso simultaneamente</Badge>
+          )}
         </div>
 
         <Card>
@@ -606,48 +1364,99 @@ export function CortadorView() {
             <CardTitle>Tableros para Cortar ({laminasCorte.length})</CardTitle>
           </CardHeader>
           <CardContent className="space-y-3">
-            {laminasCorte.map((lamina) => (
-              <Card
-                key={lamina.numero}
-                className={`border-l-4 ${
-                  lamina.estado === "completado"
-                    ? "border-l-green-500"
-                    : lamina.estado === "en_proceso"
-                      ? "border-l-primary"
-                      : "border-l-border"
-                }`}
-              >
-                <CardContent className="p-4">
-                  <div className="flex items-center justify-between mb-3">
-                    <div>
-                      <p className="font-bold text-lg">Tablero {lamina.numero}</p>
-                      <p className="text-sm text-muted-foreground">
-                        {lamina.estado === "completado" && (
-                          <span className="text-green-600 font-medium">
-                            ✓ Completado - {formatearTiempo(lamina.tiempoTotal)}
-                          </span>
-                        )}
-                        {lamina.estado === "en_proceso" && (
-                          <span className="text-primary font-medium">
-                            ⏱ En proceso - {formatearTiempo(tiempoActual)}
-                          </span>
-                        )}
-                        {lamina.estado === "sin_iniciar" && <span className="text-muted-foreground">Sin iniciar</span>}
-                      </p>
+            {laminasCorte.map((lamina) => {
+              const tiempoLamina = tiemposLaminas.get(lamina.numero)
+              const tiempoActualLamina = tiempoLamina?.tiempoActual || 0
+              const tiempoPausadoLamina = tiempoLamina?.tiempoPausado || lamina.tiempoPausado
+
+              return (
+                <Card
+                  key={lamina.numero}
+                  className={`border-l-4 ${
+                    lamina.estado === "completado"
+                      ? "border-l-green-500"
+                      : lamina.estado === "en_proceso"
+                        ? "border-l-primary"
+                        : lamina.estado === "pausado"
+                          ? "border-l-yellow-500"
+                          : "border-l-border"
+                  }`}
+                >
+                  <CardContent className="p-4">
+                    <div className="flex items-center justify-between mb-3">
+                      <div>
+                        <p className="font-bold text-lg">Tablero {lamina.numero}</p>
+                        <div className="text-sm">
+                          {lamina.estado === "completado" && (
+                            <div className="space-y-1">
+                              <span className="text-green-600 font-medium block">
+                                Completado - Activo: {formatearTiempo(lamina.tiempoTotal)}
+                              </span>
+                              {lamina.tiempoPausado > 0 && (
+                                <span className="text-yellow-600 text-xs block">
+                                  Pausado: {formatearTiempo(lamina.tiempoPausado)}
+                                </span>
+                              )}
+                            </div>
+                          )}
+                          {lamina.estado === "en_proceso" && laminasEnProceso.has(lamina.numero) && (
+                            <div className="space-y-1">
+                              <span className="text-primary font-medium block">
+                                En proceso - Activo: {formatearTiempo(tiempoActualLamina)}
+                              </span>
+                              {tiempoPausadoLamina > 0 && (
+                                <span className="text-yellow-600 text-xs block">
+                                  Pausado: {formatearTiempo(tiempoPausadoLamina)}
+                                </span>
+                              )}
+                            </div>
+                          )}
+                          {lamina.estado === "pausado" && laminasEnProceso.has(lamina.numero) && (
+                            <div className="space-y-1">
+                              <span className="text-yellow-600 font-medium flex items-center gap-1">
+                                <AlertTriangle className="h-4 w-4" />
+                                PAUSADO - {formatearTiempo(tiempoPausadoLamina)}
+                              </span>
+                            </div>
+                          )}
+                          {lamina.estado === "pendiente" && <span className="text-muted-foreground">Sin iniciar</span>}
+                        </div>
+                      </div>
                     </div>
-                  </div>
 
-                  <div className="flex gap-2 flex-wrap">
-                    {lamina.estado === "sin_iniciar" && (
-                      <Button onClick={() => handleIniciarLamina(lamina.numero)} className="flex-1" size="lg">
-                        <Play className="mr-2 h-4 w-4" />
-                        Iniciar
-                      </Button>
-                    )}
+                    <div className="flex gap-2 flex-wrap">
+                      {lamina.estado === "pendiente" && (
+                        <Button onClick={() => handleIniciarLamina(lamina.numero)} className="flex-1" size="lg">
+                          <Play className="mr-2 h-4 w-4" />
+                          Iniciar
+                        </Button>
+                      )}
 
-                    {lamina.estado === "en_proceso" && laminaEnProceso === lamina.numero && (
-                      <>
-                        {laminaPausada === lamina.numero ? (
+                      {lamina.estado === "en_proceso" && laminasEnProceso.has(lamina.numero) && (
+                        <>
+                          <Button
+                            onClick={() => handlePausarLamina(lamina.numero)}
+                            variant="secondary"
+                            className="flex-1 bg-yellow-500 hover:bg-yellow-600 text-background"
+                            size="lg"
+                          >
+                            <Pause className="mr-2 h-4 w-4" />
+                            Pausar
+                          </Button>
+                          <Button
+                            onClick={() => handleDetenerLamina(lamina.numero)}
+                            variant="default"
+                            className="flex-1 bg-green-600 hover:bg-green-700"
+                            size="lg"
+                          >
+                            <CheckCircle2 className="mr-2 h-4 w-4" />
+                            Finalizar
+                          </Button>
+                        </>
+                      )}
+
+                      {lamina.estado === "pausado" && laminasEnProceso.has(lamina.numero) && (
+                        <>
                           <Button
                             onClick={() => handleContinuarLamina(lamina.numero)}
                             variant="secondary"
@@ -657,45 +1466,35 @@ export function CortadorView() {
                             <Play className="mr-2 h-4 w-4" />
                             Continuar
                           </Button>
-                        ) : (
                           <Button
-                            onClick={() => handlePausarLamina(lamina.numero)}
-                            variant="secondary"
-                            className="flex-1"
+                            onClick={() => handleDetenerLamina(lamina.numero)}
+                            variant="default"
+                            className="flex-1 bg-green-600 hover:bg-green-700"
                             size="lg"
                           >
-                            <Pause className="mr-2 h-4 w-4" />
-                            Pausar
+                            <CheckCircle2 className="mr-2 h-4 w-4" />
+                            Finalizar
                           </Button>
-                        )}
-                        <Button
-                          onClick={() => handleDetenerLamina(lamina.numero)}
-                          variant="default"
-                          className="flex-1 bg-green-600 hover:bg-green-700"
-                          size="lg"
-                        >
-                          <CheckCircle2 className="mr-2 h-4 w-4" /> {/* Changed from CheckCircle */}
-                          Finalizar
-                        </Button>
-                      </>
-                    )}
+                        </>
+                      )}
 
-                    {lamina.estado === "completado" && (
-                      <Badge variant="secondary" className="bg-green-500 text-white text-sm py-2 px-4">
-                        <CheckCircle2 className="mr-2 h-4 w-4" /> {/* Changed from CheckCircle */}
-                        Completado
-                      </Badge>
-                    )}
-                  </div>
-                </CardContent>
-              </Card>
-            ))}
+                      {lamina.estado === "completado" && (
+                        <Badge variant="secondary" className="bg-green-500 text-white text-sm py-2 px-4">
+                          <CheckCircle2 className="mr-2 h-4 w-4" />
+                          Completado
+                        </Badge>
+                      )}
+                    </div>
+                  </CardContent>
+                </Card>
+              )
+            })}
           </CardContent>
         </Card>
 
         {todasCompletas && (
           <Button onClick={handleFinalizarCorte} size="lg" className="w-full bg-green-600 hover:bg-green-700">
-            <CheckCircle2 className="mr-2 h-5 w-5" /> {/* Changed from CheckCircle */}
+            <CheckCircle2 className="mr-2 h-5 w-5" />
             Finalizar Corte Completo
           </Button>
         )}
@@ -713,8 +1512,15 @@ export function CortadorView() {
             <ArrowLeft className="mr-2 h-4 w-4" />
             Volver
           </Button>
-          <h2 className="text-2xl font-bold text-foreground">Proceso de Enchape - Enchapadora Fravol</h2>
-          <p className="text-sm text-muted-foreground">NP: {notaSeleccionada?.numero}</p>
+          <div className="flex items-center gap-3">
+            <Bell className={`h-5 w-5 ${getPrioridadColor(notaSeleccionada?.tipo_entrega || "retiro")}`} />
+            <div>
+              <h2 className="text-2xl font-bold text-foreground">Proceso de Enchape - Enchapadora Fravol</h2>
+              <p className="text-sm text-muted-foreground">
+                NP: {notaSeleccionada?.numero} - {getTipoEntregaLabel(notaSeleccionada?.tipo_entrega || "retiro")}
+              </p>
+            </div>
+          </div>
         </div>
 
         <Card>
@@ -730,7 +1536,9 @@ export function CortadorView() {
                     ? "border-l-green-500"
                     : enchape.estado === "en_proceso"
                       ? "border-l-primary"
-                      : "border-l-border"
+                      : enchape.estado === "pausado"
+                        ? "border-l-yellow-500"
+                        : "border-l-border"
                 }`}
               >
                 <CardContent className="p-4">
@@ -739,27 +1547,49 @@ export function CortadorView() {
                       <p className="font-bold text-lg capitalize">Enchape {enchape.tipo}</p>
                       <p className="text-sm text-muted-foreground">
                         {enchape.tipo === "rigido"
-                          ? `${notaSeleccionada?.cantoRigido}m`
-                          : `${notaSeleccionada?.cantoFlexible}m`}
+                          ? `${notaSeleccionada?.canto_rigido}m`
+                          : `${notaSeleccionada?.canto_flexible}m`}
                       </p>
-                      <p className="text-sm">
+                      <div className="text-sm">
                         {enchape.estado === "completado" && (
-                          <span className="text-green-600 font-medium">
-                            ✓ Completado - {formatearTiempo(enchape.tiempoTotal)}
-                          </span>
+                          <div className="space-y-1">
+                            <span className="text-green-600 font-medium block">
+                              Completado - Activo: {formatearTiempo(enchape.tiempoTotal)}
+                            </span>
+                            {enchape.tiempoPausado > 0 && (
+                              <span className="text-yellow-600 text-xs block">
+                                Pausado: {formatearTiempo(enchape.tiempoPausado)}
+                              </span>
+                            )}
+                          </div>
                         )}
-                        {enchape.estado === "en_proceso" && (
-                          <span className="text-primary font-medium">
-                            ⏱ En proceso - {formatearTiempo(tiempoEnchapeActual)}
-                          </span>
+                        {enchape.estado === "en_proceso" && enchapeEnProceso === enchape.tipo && (
+                          <div className="space-y-1">
+                            <span className="text-primary font-medium block">
+                              En proceso - Activo: {formatearTiempo(tiempoEnchapeActual)}
+                            </span>
+                            {tiempoPausadoEnchapeActual > 0 && (
+                              <span className="text-yellow-600 text-xs block">
+                                Pausado: {formatearTiempo(tiempoPausadoEnchapeActual)}
+                              </span>
+                            )}
+                          </div>
                         )}
-                        {enchape.estado === "sin_iniciar" && <span className="text-muted-foreground">Sin iniciar</span>}
-                      </p>
+                        {enchape.estado === "pausado" && enchapeEnProceso === enchape.tipo && (
+                          <div className="space-y-1">
+                            <span className="text-yellow-600 font-medium flex items-center gap-1">
+                              <AlertTriangle className="h-4 w-4" />
+                              PAUSADO - {formatearTiempo(tiempoPausadoEnchapeActual)}
+                            </span>
+                          </div>
+                        )}
+                        {enchape.estado === "pendiente" && <span className="text-muted-foreground">Sin iniciar</span>}
+                      </div>
                     </div>
                   </div>
 
                   <div className="flex gap-2 flex-wrap">
-                    {enchape.estado === "sin_iniciar" && (
+                    {enchape.estado === "pendiente" && (
                       <Button onClick={() => handleIniciarEnchapeRegistro(enchape.tipo)} className="flex-1" size="lg">
                         <Play className="mr-2 h-4 w-4" />
                         Iniciar
@@ -768,34 +1598,45 @@ export function CortadorView() {
 
                     {enchape.estado === "en_proceso" && enchapeEnProceso === enchape.tipo && (
                       <>
-                        {enchapePausado === enchape.tipo ? (
-                          <Button
-                            onClick={() => handleContinuarEnchape(enchape.tipo)}
-                            variant="secondary"
-                            className="flex-1"
-                            size="lg"
-                          >
-                            <Play className="mr-2 h-4 w-4" />
-                            Continuar
-                          </Button>
-                        ) : (
-                          <Button
-                            onClick={() => handlePausarEnchape(enchape.tipo)}
-                            variant="secondary"
-                            className="flex-1"
-                            size="lg"
-                          >
-                            <Pause className="mr-2 h-4 w-4" />
-                            Pausar
-                          </Button>
-                        )}
+                        <Button
+                          onClick={() => handlePausarEnchape(enchape.tipo)}
+                          variant="secondary"
+                          className="flex-1 bg-yellow-500 hover:bg-yellow-600 text-background"
+                          size="lg"
+                        >
+                          <Pause className="mr-2 h-4 w-4" />
+                          Pausar
+                        </Button>
                         <Button
                           onClick={() => handleDetenerEnchape(enchape.tipo)}
                           variant="default"
                           className="flex-1 bg-green-600 hover:bg-green-700"
                           size="lg"
                         >
-                          <CheckCircle2 className="mr-2 h-4 w-4" /> {/* Changed from CheckCircle */}
+                          <CheckCircle2 className="mr-2 h-4 w-4" />
+                          Finalizar
+                        </Button>
+                      </>
+                    )}
+
+                    {enchape.estado === "pausado" && enchapeEnProceso === enchape.tipo && (
+                      <>
+                        <Button
+                          onClick={() => handleContinuarEnchape(enchape.tipo)}
+                          variant="secondary"
+                          className="flex-1"
+                          size="lg"
+                        >
+                          <Play className="mr-2 h-4 w-4" />
+                          Continuar
+                        </Button>
+                        <Button
+                          onClick={() => handleDetenerEnchape(enchape.tipo)}
+                          variant="default"
+                          className="flex-1 bg-green-600 hover:bg-green-700"
+                          size="lg"
+                        >
+                          <CheckCircle2 className="mr-2 h-4 w-4" />
                           Finalizar
                         </Button>
                       </>
@@ -803,7 +1644,7 @@ export function CortadorView() {
 
                     {enchape.estado === "completado" && (
                       <Badge variant="secondary" className="bg-green-500 text-white text-sm py-2 px-4">
-                        <CheckCircle2 className="mr-2 h-4 w-4" /> {/* Changed from CheckCircle */}
+                        <CheckCircle2 className="mr-2 h-4 w-4" />
                         Completado
                       </Badge>
                     )}
@@ -816,7 +1657,7 @@ export function CortadorView() {
 
         {todosCompletos && (
           <Button onClick={handleFinalizarEnchape} size="lg" className="w-full bg-green-600 hover:bg-green-700">
-            <CheckCircle2 className="mr-2 h-5 w-5" /> {/* Changed from CheckCircle */}
+            <CheckCircle2 className="mr-2 h-5 w-5" />
             Finalizar Enchape y Completar Trabajo
           </Button>
         )}

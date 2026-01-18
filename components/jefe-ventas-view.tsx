@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useEffect } from "react"
+import { useState, useEffect, useCallback } from "react"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import {
@@ -17,26 +17,75 @@ import {
   LineChart,
   Line,
 } from "recharts"
-import { CorteController } from "@/lib/corte-controller"
-import { NotaPedidoController } from "@/lib/nota-pedido-controller"
-import { UserModel, type Usuario } from "@/lib/user-model"
-import { Users, Clock, Target, AlertCircle, UserPlus, Trash2, FileText, Download } from "lucide-react"
+import {
+  Users,
+  Clock,
+  Target,
+  AlertCircle,
+  UserPlus,
+  Trash2,
+  FileText,
+  Download,
+  Wifi,
+  WifiOff,
+  RefreshCw,
+  Bell,
+  Ruler,
+  Scissors,
+} from "lucide-react"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { format } from "date-fns"
+import { createClient } from "@/lib/supabase/client"
+import { useRealtimeNotas, useRealtimeDashboard } from "@/lib/hooks/use-realtime"
+import { registerUser, getAllUsers, deactivateUser } from "@/lib/services/auth-service"
+import type { Usuario, NotaPedido } from "@/lib/supabase/types"
 
-const COLORS = ["#FFEB3B", "#1E1E1E", "#FDD835", "#424242", "#FFEE58"]
+const COLORS = ["#3B82F6", "#10B981", "#F59E0B", "#EF4444", "#8B5CF6"]
+
+function formatTiempo(segundos: number): string {
+  if (!segundos || segundos <= 0) return "0s"
+  
+  const horas = Math.floor(segundos / 3600)
+  const minutos = Math.floor((segundos % 3600) / 60)
+  const segs = Math.floor(segundos % 60)
+
+  if (horas > 0) {
+    if (minutos > 0 && segs > 0) {
+      return `${horas}h ${minutos}m ${segs}s`
+    } else if (minutos > 0) {
+      return `${horas}h ${minutos}m`
+    }
+    return `${horas}h ${segs}s`
+  }
+  
+  if (minutos > 0) {
+    return `${minutos}m ${segs}s`
+  }
+  
+  return `${segs}s`
+}
+
+function getPrioridadInfo(tipo: string | null | undefined): { color: string; label: string; bgClass: string } {
+  switch (tipo) {
+    case "domicilio":
+      return { color: "text-red-500", label: "Domicilio", bgClass: "bg-red-500/10" }
+    case "retiro_tienda":
+      return { color: "text-yellow-500", label: "Retiro", bgClass: "bg-yellow-500/10" }
+    case "portable":
+      return { color: "text-green-500", label: "Portable", bgClass: "bg-green-500/10" }
+    default:
+      return { color: "text-muted-foreground", label: "N/A", bgClass: "bg-muted" }
+  }
+}
 
 export function JefeVentasView() {
-  const [controller] = useState(() => new CorteController())
-  const [npController] = useState(() => new NotaPedidoController())
-  const [userModel] = useState(() => UserModel.getInstance())
-  const [cortes, setCortes] = useState(controller.obtenerTodosLosCortes())
-  const [notasPedido, setNotasPedido] = useState(npController.obtenerTodasLasNotas())
+  const [notasPedidoData, setNotasPedidoData] = useState<NotaPedido[]>([])
   const [usuarios, setUsuarios] = useState<Usuario[]>([])
+  const [isLoading, setIsLoading] = useState(true)
 
   const [nuevoUsuario, setNuevoUsuario] = useState({
     nombre: "",
@@ -47,53 +96,53 @@ export function JefeVentasView() {
 
   const [busquedaNP, setBusquedaNP] = useState("")
 
+  const { notas, displayConnected, refreshNotas, usePolling } = useRealtimeNotas(notasPedidoData)
+  const { lastUpdate, isConnected: dashboardConnected } = useRealtimeDashboard()
+
+  // Cargar datos iniciales desde Supabase
+  const cargarDatos = useCallback(async () => {
+    const supabase = createClient()
+
+    const [notasRes, usuariosRes] = await Promise.all([
+      supabase.from("notas_pedido").select("*").order("fecha_creacion", { ascending: false }),
+      getAllUsers(),
+    ])
+
+    if (notasRes.data) {
+      setNotasPedidoData(notasRes.data as NotaPedido[])
+      refreshNotas(notasRes.data as NotaPedido[])
+    }
+
+    setUsuarios(usuariosRes)
+    setIsLoading(false)
+  }, [refreshNotas])
+
   useEffect(() => {
-    const interval = setInterval(() => {
-      setCortes(controller.obtenerTodosLosCortes())
-      setNotasPedido(npController.obtenerTodasLasNotas())
-      setUsuarios(userModel.obtenerTodosLosUsuarios())
-    }, 2000)
+    cargarDatos()
+  }, [cargarDatos])
 
-    setUsuarios(userModel.obtenerTodosLosUsuarios())
-
-    return () => clearInterval(interval)
-  }, [controller, npController, userModel])
-
-  const handleCrearUsuario = () => {
-    if (!nuevoUsuario.nombre || !nuevoUsuario.email || !nuevoUsuario.password) {
-      alert("Por favor complete todos los campos")
-      return
+  useEffect(() => {
+    if (usePolling) {
+      const interval = setInterval(() => {
+        cargarDatos()
+      }, 30000)
+      return () => clearInterval(interval)
     }
+  }, [usePolling, cargarDatos])
 
-    const existente = userModel.obtenerUsuarioPorEmail(nuevoUsuario.email)
-    if (existente) {
-      alert("Error: El email ya está registrado")
-      return
+  // Recargar cuando haya actualizaciones realtime
+  useEffect(() => {
+    if (lastUpdate) {
+      cargarDatos()
     }
+  }, [lastUpdate, cargarDatos])
 
-    const usuario = userModel.crearUsuario({
-      nombre: nuevoUsuario.nombre,
-      email: nuevoUsuario.email,
-      password: nuevoUsuario.password,
-      role: nuevoUsuario.role,
-      activo: true,
-    })
-
-    setUsuarios(userModel.obtenerTodosLosUsuarios())
-    setNuevoUsuario({ nombre: "", email: "", password: "", role: "cortador" })
-    alert(`Usuario ${nuevoUsuario.nombre} creado exitosamente`)
-  }
-
-  const handleEliminarUsuario = (id: string) => {
-    if (confirm("¿Está seguro de eliminar este usuario?")) {
-      userModel.desactivarUsuario(id)
-      setUsuarios(userModel.obtenerTodosLosUsuarios())
-    }
-  }
+  // Usar notas del hook realtime
+  const notasPedido = notas.length > 0 ? notas : notasPedidoData
 
   const cortesHoy = notasPedido.filter((np) => {
     const hoy = new Date()
-    const fechaProceso = np.fechaInicioProceso ? new Date(np.fechaInicioProceso) : null
+    const fechaProceso = np.fecha_inicio_proceso ? new Date(np.fecha_inicio_proceso) : null
     return (
       fechaProceso &&
       fechaProceso.getDate() === hoy.getDate() &&
@@ -107,8 +156,18 @@ export function JefeVentasView() {
   const tiempoPromedio =
     cortesCompletados.length > 0
       ? cortesCompletados.reduce((acc, np) => {
-          const tiempoTotal = (np.tiempoCorte || 0) + (np.tiempoEnchapeRigido || 0) + (np.tiempoEnchapeFlexible || 0)
+          const tiempoTotal =
+            (np.tiempo_corte || 0) + (np.tiempo_enchape_rigido || 0) + (np.tiempo_enchape_flexible || 0)
           return acc + tiempoTotal
+        }, 0) /
+        cortesCompletados.length /
+        60
+      : 0
+
+  const tiempoPausadoPromedio =
+    cortesCompletados.length > 0
+      ? cortesCompletados.reduce((acc, np) => {
+          return acc + (np.tiempo_pausado_corte || 0) + (np.tiempo_pausado_enchape || 0)
         }, 0) /
         cortesCompletados.length /
         60
@@ -119,18 +178,23 @@ export function JefeVentasView() {
   )
   const npsCompletadas = notasPedido.filter((np) => np.estado === "completado" || np.estado === "cerrado")
 
-  const cortadoresMap = new Map<string, { nombre: string; cortes: number; tiempoPromedio: number }>()
+  const cortadoresMap = new Map<
+    string,
+    { nombre: string; cortes: number; tiempoPromedio: number; tiempoPausado: number }
+  >()
   notasPedido.forEach((np) => {
-    if (np.cortadorNombre && (np.estado === "completado" || np.estado === "cerrado")) {
-      const existente = cortadoresMap.get(np.cortadorNombre) || {
-        nombre: np.cortadorNombre,
+    if (np.cortador_nombre && (np.estado === "completado" || np.estado === "cerrado")) {
+      const existente = cortadoresMap.get(np.cortador_nombre) || {
+        nombre: np.cortador_nombre,
         cortes: 0,
         tiempoPromedio: 0,
+        tiempoPausado: 0,
       }
       existente.cortes += 1
-      const tiempoTotal = (np.tiempoCorte || 0) + (np.tiempoEnchapeRigido || 0) + (np.tiempoEnchapeFlexible || 0)
+      const tiempoTotal = (np.tiempo_corte || 0) + (np.tiempo_enchape_rigido || 0) + (np.tiempo_enchape_flexible || 0)
       existente.tiempoPromedio += tiempoTotal
-      cortadoresMap.set(np.cortadorNombre, existente)
+      existente.tiempoPausado += (np.tiempo_pausado_corte || 0) + (np.tiempo_pausado_enchape || 0)
+      cortadoresMap.set(np.cortador_nombre, existente)
     }
   })
 
@@ -138,16 +202,17 @@ export function JefeVentasView() {
     nombre: c.nombre,
     cortes: c.cortes,
     tiempoPromedio: c.cortes > 0 ? Math.round(c.tiempoPromedio / c.cortes / 60) : 0,
+    tiempoPausado: c.cortes > 0 ? Math.round(c.tiempoPausado / c.cortes / 60) : 0,
   }))
 
   const distribucionMaquinas = [
     {
       name: "Sierra Striebig",
-      value: notasPedido.filter((np) => np.corteCompletado).length,
+      value: notasPedido.filter((np) => np.corte_completado).length,
     },
     {
       name: "Enchapadora Fravol",
-      value: notasPedido.filter((np) => np.enchapeCompletado).length,
+      value: notasPedido.filter((np) => np.enchape_completado).length,
     },
   ]
 
@@ -155,7 +220,7 @@ export function JefeVentasView() {
     const fecha = new Date()
     fecha.setDate(fecha.getDate() - (6 - i))
     const npsDia = notasPedido.filter((np) => {
-      const fechaProceso = np.fechaInicioProceso ? new Date(np.fechaInicioProceso) : null
+      const fechaProceso = np.fecha_inicio_proceso ? new Date(np.fecha_inicio_proceso) : null
       return (
         fechaProceso &&
         fechaProceso.getDate() === fecha.getDate() &&
@@ -170,43 +235,14 @@ export function JefeVentasView() {
     }
   })
 
-  const asesoresMap = new Map<string, { nombre: string; cantidad: number }>()
-  notasPedido.forEach((np) => {
-    const existente = asesoresMap.get(np.asesorId) || { nombre: np.asesorNombre, cantidad: 0 }
-    existente.cantidad += 1
-    asesoresMap.set(np.asesorId, existente)
-  })
-
-  const datosAsesores = Array.from(asesoresMap.values())
-
-  const npsEstados = [
-    { name: "Pendiente", value: notasPedido.filter((np) => np.estado === "pendiente").length },
-    {
-      name: "En Proceso",
-      value: notasPedido.filter((np) => np.estado === "en_corte" || np.estado === "en_enchape").length,
-    },
-    {
-      name: "Completado",
-      value: notasPedido.filter((np) => np.estado === "completado" || np.estado === "cerrado").length,
-    },
-  ]
-
   const notasConPlanos = notasPedido.filter((np) => {
-    console.log("[v0] Revisando NP:", np.numero, "archivosPed:", np.archivosPed?.length || 0) // Debug
-
-    // Si hay búsqueda, filtrar por número de NP
     if (busquedaNP.trim()) {
-      return np.numero.toLowerCase().includes(busquedaNP.toLowerCase()) && np.archivosPed && np.archivosPed.length > 0
+      return np.numero.toLowerCase().includes(busquedaNP.toLowerCase()) && np.archivos_ped && np.archivos_ped.length > 0
     }
-
-    // Sin búsqueda, mostrar todas las notas con planos
-    return np.archivosPed && np.archivosPed.length > 0
+    return np.archivos_ped && np.archivos_ped.length > 0
   })
 
-  console.log("[v0] Total notas con planos:", notasConPlanos.length) // Debug
-
-  const descargarPlano = (archivo: { nombre: string; url: string; fechaSubida: Date }) => {
-    console.log("[v0] Descargando plano:", archivo.nombre) // Debug
+  const descargarPlano = (archivo: { nombre: string; url: string; fechaSubida?: string }) => {
     try {
       const link = document.createElement("a")
       link.href = archivo.url
@@ -214,21 +250,102 @@ export function JefeVentasView() {
       document.body.appendChild(link)
       link.click()
       document.body.removeChild(link)
-      console.log("[v0] Plano descargado exitosamente") // Debug
     } catch (error) {
-      console.error("[v0] Error al descargar plano:", error)
+      console.error("Error al descargar plano:", error)
     }
+  }
+
+  const handleCrearUsuario = async () => {
+    if (!nuevoUsuario.nombre || !nuevoUsuario.email || !nuevoUsuario.password) {
+      alert("Por favor complete todos los campos")
+      return
+    }
+
+    const result = await registerUser(nuevoUsuario.nombre, nuevoUsuario.email, nuevoUsuario.password, nuevoUsuario.role)
+
+    if (!result.success) {
+      alert(result.error || "Error al crear usuario")
+      return
+    }
+
+    setUsuarios(await getAllUsers())
+    setNuevoUsuario({ nombre: "", email: "", password: "", role: "cortador" })
+    alert(`Usuario ${nuevoUsuario.nombre} creado exitosamente`)
+  }
+
+  const handleEliminarUsuario = async (id: string) => {
+    if (confirm("¿Está seguro de eliminar este usuario?")) {
+      await deactivateUser(id)
+      setUsuarios(await getAllUsers())
+    }
+  }
+
+  const totalesCompletados = cortesCompletados.reduce(
+    (acc, np) => {
+      return {
+        metrosRigido: acc.metrosRigido + (np.canto_rigido || 0),
+        metrosFlexible: acc.metrosFlexible + (np.canto_flexible || 0),
+        totalLaminas: acc.totalLaminas + (np.cantidad_laminas || 0),
+        totalDesplazamientos: acc.totalDesplazamientos + (np.cantidad_desplazamientos || 0),
+        totalPerforaciones: acc.totalPerforaciones + (np.cantidad_perforaciones || 0),
+        tiempoTotal:
+          acc.tiempoTotal +
+          (np.tiempo_corte || 0) +
+          (np.tiempo_enchape_rigido || 0) +
+          (np.tiempo_enchape_flexible || 0),
+        tiempoPausado: acc.tiempoPausado + (np.tiempo_pausado_corte || 0) + (np.tiempo_pausado_enchape || 0),
+      }
+    },
+    { metrosRigido: 0, metrosFlexible: 0, totalLaminas: 0, totalDesplazamientos: 0, totalPerforaciones: 0, tiempoTotal: 0, tiempoPausado: 0 },
+  )
+
+  if (isLoading) {
+    return (
+      <div className="flex items-center justify-center h-64">
+        <div className="text-center">
+          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary mx-auto"></div>
+          <p className="mt-4 text-muted-foreground">Cargando datos...</p>
+        </div>
+      </div>
+    )
   }
 
   return (
     <div className="space-y-6">
-      <div>
-        <h2 className="text-3xl font-bold text-foreground">Panel del Jefe de Ventas</h2>
-        <p className="text-muted-foreground">Vista general del rendimiento del centro de corte</p>
+      <div className="flex items-center justify-between">
+        <div>
+          <h2 className="text-3xl font-bold text-foreground">Panel del Jefe de Ventas</h2>
+          <p className="text-muted-foreground">Vista general del rendimiento del centro de corte</p>
+        </div>
+        <div className="flex items-center gap-2">
+          {displayConnected || dashboardConnected ? (
+            <Badge variant="outline" className="bg-green-500/10 text-green-500 border-green-500/20">
+              {usePolling ? (
+                <>
+                  <RefreshCw className="h-3 w-3 mr-1" />
+                  Auto-refresh
+                </>
+              ) : (
+                <>
+                  <Wifi className="h-3 w-3 mr-1" />
+                  En vivo
+                </>
+              )}
+            </Badge>
+          ) : (
+            <Badge variant="outline" className="bg-muted text-muted-foreground border-muted">
+              <WifiOff className="h-3 w-3 mr-1" />
+              Offline
+            </Badge>
+          )}
+          <Button variant="outline" size="sm" onClick={cargarDatos}>
+            <RefreshCw className="h-4 w-4" />
+          </Button>
+        </div>
       </div>
 
       {/* KPIs principales */}
-      <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
+      <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-5">
         <Card className="border-l-4 border-l-primary">
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
             <CardTitle className="text-sm font-medium">Cortes Hoy</CardTitle>
@@ -248,6 +365,17 @@ export function JefeVentasView() {
           <CardContent>
             <div className="text-2xl font-bold">{Math.round(tiempoPromedio)} min</div>
             <p className="text-xs text-muted-foreground">Por trabajo completado</p>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+            <CardTitle className="text-sm font-medium">Tiempo Pausado</CardTitle>
+            <Clock className="h-4 w-4 text-yellow-500" />
+          </CardHeader>
+          <CardContent>
+            <div className="text-2xl font-bold text-yellow-600">{Math.round(tiempoPausadoPromedio)} min</div>
+            <p className="text-xs text-muted-foreground">Promedio por trabajo</p>
           </CardContent>
         </Card>
 
@@ -306,7 +434,7 @@ export function JefeVentasView() {
                       }}
                       labelStyle={{ color: "hsl(var(--foreground))" }}
                     />
-                    <Bar dataKey="cortes" fill="#FFEB3B" name="Cortes Completados" radius={[8, 8, 0, 0]} />
+                    <Bar dataKey="cortes" fill="#3B82F6" name="Cortes Completados" radius={[8, 8, 0, 0]} />
                   </BarChart>
                 </ResponsiveContainer>
               ) : (
@@ -319,8 +447,8 @@ export function JefeVentasView() {
 
           <Card>
             <CardHeader>
-              <CardTitle>Tiempo Promedio por Cortador</CardTitle>
-              <CardDescription>Minutos por trabajo completado</CardDescription>
+              <CardTitle>Tiempo Pausado por Cortador</CardTitle>
+              <CardDescription>Minutos de pausa promedio por trabajo</CardDescription>
             </CardHeader>
             <CardContent className="h-80">
               {rendimientoCortadores.length > 0 ? (
@@ -337,7 +465,8 @@ export function JefeVentasView() {
                         color: "hsl(var(--foreground))",
                       }}
                     />
-                    <Bar dataKey="tiempoPromedio" fill="#1E1E1E" name="Minutos" radius={[0, 8, 8, 0]} />
+                    <Bar dataKey="tiempoPromedio" fill="#10B981" name="Tiempo Activo (min)" radius={[0, 8, 8, 0]} />
+                    <Bar dataKey="tiempoPausado" fill="#F59E0B" name="Tiempo Pausado (min)" radius={[0, 8, 8, 0]} />
                   </BarChart>
                 </ResponsiveContainer>
               ) : (
@@ -370,7 +499,7 @@ export function JefeVentasView() {
                       dataKey="value"
                     >
                       {distribucionMaquinas.map((entry, index) => (
-                        <Cell key={`cell-${index}`} fill={index === 0 ? "#FFEB3B" : "#1E1E1E"} />
+                        <Cell key={`cell-${index}`} fill={index === 0 ? "#3B82F6" : "#10B981"} />
                       ))}
                     </Pie>
                     <Tooltip
@@ -416,18 +545,18 @@ export function JefeVentasView() {
                   <Line
                     type="monotone"
                     dataKey="cortes"
-                    stroke="#FFEB3B"
+                    stroke="#3B82F6"
                     strokeWidth={3}
-                    dot={{ fill: "#FFEB3B", r: 5 }}
+                    dot={{ fill: "#3B82F6", r: 5 }}
                     activeDot={{ r: 8 }}
                     name="Iniciados"
                   />
                   <Line
                     type="monotone"
                     dataKey="completados"
-                    stroke="#4CAF50"
+                    stroke="#10B981"
                     strokeWidth={3}
-                    dot={{ fill: "#4CAF50", r: 5 }}
+                    dot={{ fill: "#10B981", r: 5 }}
                     name="Completados"
                   />
                 </LineChart>
@@ -437,131 +566,163 @@ export function JefeVentasView() {
         </TabsContent>
 
         <TabsContent value="notasterminadas" className="space-y-4">
+          <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-5">
+            <Card className="border-l-4 border-l-blue-500">
+              <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+                <CardTitle className="text-sm font-medium">Metros Rígido</CardTitle>
+                <Ruler className="h-4 w-4 text-blue-500" />
+              </CardHeader>
+              <CardContent>
+                <div className="text-2xl font-bold text-blue-600">{totalesCompletados.metrosRigido} m</div>
+                <p className="text-xs text-muted-foreground">Total enchape rígido</p>
+              </CardContent>
+            </Card>
+
+            <Card className="border-l-4 border-l-purple-500">
+              <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+                <CardTitle className="text-sm font-medium">Metros Flexible</CardTitle>
+                <Ruler className="h-4 w-4 text-purple-500" />
+              </CardHeader>
+              <CardContent>
+                <div className="text-2xl font-bold text-purple-600">{totalesCompletados.metrosFlexible} m</div>
+                <p className="text-xs text-muted-foreground">Total enchape flexible</p>
+              </CardContent>
+            </Card>
+
+            <Card className="border-l-4 border-l-green-500">
+              <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+                <CardTitle className="text-sm font-medium">Total Láminas</CardTitle>
+                <Scissors className="h-4 w-4 text-green-500" />
+              </CardHeader>
+              <CardContent>
+                <div className="text-2xl font-bold text-green-600">{totalesCompletados.totalLaminas}</div>
+                <p className="text-xs text-muted-foreground">Láminas cortadas</p>
+              </CardContent>
+            </Card>
+
+            <Card className="border-l-4 border-l-orange-500">
+              <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+                <CardTitle className="text-sm font-medium">Desplazamientos</CardTitle>
+                <Target className="h-4 w-4 text-orange-500" />
+              </CardHeader>
+              <CardContent>
+                <div className="text-2xl font-bold text-orange-600">{totalesCompletados.totalDesplazamientos}</div>
+                <p className="text-xs text-muted-foreground">Total movimientos sierra</p>
+              </CardContent>
+            </Card>
+
+            <Card className="border-l-4 border-l-primary">
+              <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+                <CardTitle className="text-sm font-medium">Tiempo Total</CardTitle>
+                <Clock className="h-4 w-4 text-primary" />
+              </CardHeader>
+              <CardContent>
+                <div className="text-2xl font-bold">{formatTiempo(totalesCompletados.tiempoTotal)}</div>
+                <p className="text-xs text-muted-foreground">
+                  Pausado: {formatTiempo(totalesCompletados.tiempoPausado)}
+                </p>
+              </CardContent>
+            </Card>
+          </div>
+
           <Card>
             <CardHeader>
               <CardTitle>Notas de Pedido Terminadas</CardTitle>
               <CardDescription>
-                Detalles de tiempos por nota - Promedio:{" "}
-                {cortesCompletados.length > 0
-                  ? `${Math.round(cortesCompletados.reduce((acc, np) => acc + (np.cantidadLaminas || 1), 0) / cortesCompletados.length)} láminas/nota, ${Math.round(
-                      cortesCompletados.reduce((acc, np) => {
-                        const tiempoTotal =
-                          (np.tiempoCorte || 0) + (np.tiempoEnchapeRigido || 0) + (np.tiempoEnchapeFlexible || 0)
-                        return acc + tiempoTotal / (np.cantidadLaminas || 1)
-                      }, 0) /
-                        cortesCompletados.length /
-                        60,
-                    )} min/lámina`
-                  : "Sin datos"}
+                Detalles de tiempos por nota - {cortesCompletados.length} notas completadas
+                {cortesCompletados.length > 0 && (
+                  <span className="block mt-1">
+                    Promedio: {Math.round(totalesCompletados.totalLaminas / cortesCompletados.length)} láminas/nota |{" "}
+                    {Math.round(totalesCompletados.totalDesplazamientos / cortesCompletados.length)}{" "}
+                    desplazamientos/nota | {formatTiempo(totalesCompletados.tiempoTotal / cortesCompletados.length)} por
+                    nota
+                  </span>
+                )}
               </CardDescription>
             </CardHeader>
             <CardContent>
-              <div className="space-y-3 max-h-[600px] overflow-y-auto">
-                {cortesCompletados.length > 0 ? (
-                  cortesCompletados.map((np) => {
-                    const tiempoCorteMin = np.tiempoCorte ? Math.floor(np.tiempoCorte / 60) : 0
-                    const tiempoCorteSegs = np.tiempoCorte ? np.tiempoCorte % 60 : 0
-                    const tiempoEnchapeRigidoMin = np.tiempoEnchapeRigido ? Math.floor(np.tiempoEnchapeRigido / 60) : 0
-                    const tiempoEnchapeRigidoSegs = np.tiempoEnchapeRigido ? np.tiempoEnchapeRigido % 60 : 0
-                    const tiempoEnchapeFlexibleMin = np.tiempoEnchapeFlexible
-                      ? Math.floor(np.tiempoEnchapeFlexible / 60)
-                      : 0
-                    const tiempoEnchapeFlexibleSegs = np.tiempoEnchapeFlexible ? np.tiempoEnchapeFlexible % 60 : 0
-                    const tiempoTotal =
-                      (np.tiempoCorte || 0) + (np.tiempoEnchapeRigido || 0) + (np.tiempoEnchapeFlexible || 0)
-                    const tiempoTotalMin = Math.floor(tiempoTotal / 60)
-                    const tiempoTotalSegs = tiempoTotal % 60
-                    const promedioPorLamina =
-                      np.cantidadLaminas > 0 ? Math.round(tiempoTotal / np.cantidadLaminas / 60) : 0
-
-                    return (
-                      <Card key={np.id} className="border-l-4 border-l-green-500">
-                        <CardContent className="p-4">
-                          <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
-                            <div>
-                              <div className="flex items-center gap-2 mb-2">
-                                <Badge variant="outline" className="bg-green-500/10 text-green-600 border-green-500/20">
-                                  {np.estado === "cerrado" ? "Cerrado" : "Completado"}
-                                </Badge>
-                              </div>
-                              <p className="text-sm font-medium">NP: {np.numero}</p>
-                              <p className="text-xs text-muted-foreground">Asesor: {np.asesorNombre}</p>
-                              <p className="text-xs text-muted-foreground">Cortador: {np.cortadorNombre || "N/A"}</p>
+              <div className="max-h-[500px] overflow-auto">
+                <table className="w-full">
+                  <thead className="sticky top-0 bg-card z-10">
+                    <tr className="border-b">
+                      <th className="text-left p-2 font-medium">NP</th>
+                      <th className="text-left p-2 font-medium">Prioridad</th>
+                      <th className="text-left p-2 font-medium">Cliente</th>
+                      <th className="text-left p-2 font-medium">Cortador</th>
+                      <th className="text-right p-2 font-medium">Láminas</th>
+                      <th className="text-right p-2 font-medium">Desplaz.</th>
+                      <th className="text-right p-2 font-medium">M. Rígido</th>
+                      <th className="text-right p-2 font-medium">M. Flexible</th>
+                      <th className="text-right p-2 font-medium">T. Corte</th>
+                      <th className="text-right p-2 font-medium">T. Enchape</th>
+                      <th className="text-right p-2 font-medium">T. Pausado</th>
+                      <th className="text-right p-2 font-medium">Total</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {cortesCompletados.slice(0, 50).map((np) => {
+                      const tiempoTotal =
+                        (np.tiempo_corte || 0) + (np.tiempo_enchape_rigido || 0) + (np.tiempo_enchape_flexible || 0)
+                      const tiempoPausado = (np.tiempo_pausado_corte || 0) + (np.tiempo_pausado_enchape || 0)
+                      const prioridadInfo = getPrioridadInfo(np.tipo_entrega)
+                      return (
+                        <tr key={np.id} className="border-b hover:bg-muted/50">
+                          <td className="p-2 font-mono text-sm font-medium">{np.numero}</td>
+                          <td className="p-2">
+                            <div
+                              className={`flex items-center gap-1 px-2 py-1 rounded-full text-xs ${prioridadInfo.bgClass}`}
+                            >
+                              <Bell className={`h-3 w-3 ${prioridadInfo.color}`} />
+                              <span className={prioridadInfo.color}>{prioridadInfo.label}</span>
                             </div>
-
-                            <div>
-                              <p className="text-xs text-muted-foreground mb-1">Material y Cantidad</p>
-                              <p className="text-sm font-medium">{np.cantidadLaminas} láminas</p>
-                              <p className="text-xs">{np.tipoMaterial.toUpperCase()}</p>
-                              {np.llevaCanto && (
-                                <div className="text-xs text-muted-foreground mt-1">
-                                  {np.cantoRigido > 0 && <div>Rígido: {np.cantoRigido}m</div>}
-                                  {np.cantoFlexible > 0 && <div>Flexible: {np.cantoFlexible}m</div>}
-                                </div>
-                              )}
-                            </div>
-
-                            <div>
-                              <p className="text-xs text-muted-foreground mb-1">Tiempos Detallados</p>
-                              {np.tiempoCorte > 0 && (
-                                <div className="text-xs">
-                                  <span className="font-medium">Corte:</span> {tiempoCorteMin}:
-                                  {tiempoCorteSegs.toString().padStart(2, "0")} min
-                                </div>
-                              )}
-                              {np.tiempoEnchapeRigido > 0 && (
-                                <div className="text-xs">
-                                  <span className="font-medium">Enchape Rígido:</span> {tiempoEnchapeRigidoMin}:
-                                  {tiempoEnchapeRigidoSegs.toString().padStart(2, "0")} min
-                                </div>
-                              )}
-                              {np.tiempoEnchapeFlexible > 0 && (
-                                <div className="text-xs">
-                                  <span className="font-medium">Enchape Flexible:</span> {tiempoEnchapeFlexibleMin}:
-                                  {tiempoEnchapeFlexibleSegs.toString().padStart(2, "0")} min
-                                </div>
-                              )}
-                            </div>
-
-                            <div className="flex flex-col justify-center">
-                              <div className="text-center p-3 bg-primary/10 rounded-lg">
-                                <p className="text-xs text-muted-foreground mb-1">Tiempo Total</p>
-                                <p className="text-2xl font-bold text-primary">
-                                  {tiempoTotalMin}:{tiempoTotalSegs.toString().padStart(2, "0")}
-                                </p>
-                                <p className="text-xs text-muted-foreground mt-1">
-                                  Promedio: {promedioPorLamina} min/lámina
-                                </p>
-                              </div>
-                            </div>
-                          </div>
-
-                          {np.archivosPed && np.archivosPed.length > 0 && (
-                            <div className="mt-3 pt-3 border-t">
-                              <p className="text-xs text-muted-foreground mb-2">Archivos de Planos:</p>
-                              <div className="flex flex-wrap gap-2">
-                                {np.archivosPed.map((archivo, idx) => (
-                                  <a
-                                    key={idx}
-                                    href={archivo.url}
-                                    download={archivo.nombre}
-                                    className="text-xs bg-secondary hover:bg-secondary/80 px-3 py-1 rounded-md transition-colors"
-                                  >
-                                    {archivo.nombre}
-                                  </a>
-                                ))}
-                              </div>
-                            </div>
-                          )}
-                        </CardContent>
-                      </Card>
-                    )
-                  })
-                ) : (
-                  <div className="text-center py-12 text-muted-foreground">
-                    <Clock className="h-12 w-12 mx-auto mb-3 opacity-50" />
-                    <p>No hay notas terminadas aún</p>
-                  </div>
+                          </td>
+                          <td className="p-2 text-sm">{np.cliente}</td>
+                          <td className="p-2 text-sm">{np.cortador_nombre || "-"}</td>
+                          <td className="p-2 text-right text-sm">{np.cantidad_laminas || 0}</td>
+                          <td className="p-2 text-right text-sm font-medium text-orange-600">
+                            {np.cantidad_desplazamientos || 0}
+                          </td>
+                          <td className="p-2 text-right text-sm text-blue-600">{np.canto_rigido || 0}m</td>
+                          <td className="p-2 text-right text-sm text-purple-600">{np.canto_flexible || 0}m</td>
+                          <td className="p-2 text-right text-sm">{formatTiempo(np.tiempo_corte || 0)}</td>
+                          <td className="p-2 text-right text-sm">
+                            {formatTiempo((np.tiempo_enchape_rigido || 0) + (np.tiempo_enchape_flexible || 0))}
+                          </td>
+                          <td className="p-2 text-right text-sm text-yellow-600">{formatTiempo(tiempoPausado)}</td>
+                          <td className="p-2 text-right text-sm font-bold">{formatTiempo(tiempoTotal)}</td>
+                        </tr>
+                      )
+                    })}
+                  </tbody>
+                  <tfoot className="sticky bottom-0 bg-card border-t-2 border-primary">
+                    <tr className="font-bold">
+                      <td className="p-2" colSpan={4}>
+                        TOTALES ({cortesCompletados.length} notas)
+                      </td>
+                      <td className="p-2 text-right">{totalesCompletados.totalLaminas}</td>
+                      <td className="p-2 text-right text-orange-600">{totalesCompletados.totalDesplazamientos}</td>
+                      <td className="p-2 text-right text-blue-600">{totalesCompletados.metrosRigido}m</td>
+                      <td className="p-2 text-right text-purple-600">{totalesCompletados.metrosFlexible}m</td>
+                      <td className="p-2 text-right">
+                        {formatTiempo(cortesCompletados.reduce((acc, np) => acc + (np.tiempo_corte || 0), 0))}
+                      </td>
+                      <td className="p-2 text-right">
+                        {formatTiempo(
+                          cortesCompletados.reduce(
+                            (acc, np) => acc + (np.tiempo_enchape_rigido || 0) + (np.tiempo_enchape_flexible || 0),
+                            0,
+                          ),
+                        )}
+                      </td>
+                      <td className="p-2 text-right text-yellow-600">
+                        {formatTiempo(totalesCompletados.tiempoPausado)}
+                      </td>
+                      <td className="p-2 text-right">{formatTiempo(totalesCompletados.tiempoTotal)}</td>
+                    </tr>
+                  </tfoot>
+                </table>
+                {cortesCompletados.length === 0 && (
+                  <div className="text-center py-4 text-muted-foreground">No hay notas completadas</div>
                 )}
               </div>
             </CardContent>
@@ -571,127 +732,67 @@ export function JefeVentasView() {
         <TabsContent value="planos" className="space-y-4">
           <Card>
             <CardHeader>
-              <CardTitle>Gestión de Planos Lepton (.ped)</CardTitle>
-              <CardDescription>
-                Buscar y descargar archivos de planos por nota de pedido - Total:{" "}
-                {notasPedido.filter((np) => np.archivosPed && np.archivosPed.length > 0).length} notas con planos
-              </CardDescription>
+              <CardTitle className="flex items-center gap-2">
+                <FileText className="h-5 w-5" />
+                Planos de Notas de Pedido
+              </CardTitle>
+              <CardDescription>Visualización y descarga de archivos .ped subidos por los asesores</CardDescription>
+              <div className="mt-4">
+                <Input
+                  placeholder="Buscar por número de NP..."
+                  value={busquedaNP}
+                  onChange={(e) => setBusquedaNP(e.target.value)}
+                  className="max-w-sm"
+                />
+              </div>
             </CardHeader>
             <CardContent>
               <div className="space-y-4">
-                <div className="flex gap-2">
-                  <Input
-                    placeholder="Buscar por número de NP..."
-                    className="flex-1"
-                    value={busquedaNP}
-                    onChange={(e) => setBusquedaNP(e.target.value)}
-                  />
-                  <Button variant="outline" onClick={() => setBusquedaNP("")}>
-                    Limpiar
-                  </Button>
-                </div>
-
-                {notasConPlanos.length === 0 && (
-                  <div className="text-center py-12">
-                    <FileText className="mx-auto h-16 w-16 text-muted-foreground mb-4" />
-                    <p className="text-lg text-muted-foreground">
-                      {busquedaNP.trim()
-                        ? `No se encontraron planos para la NP: ${busquedaNP}`
-                        : "No hay notas de pedido con planos cargados"}
-                    </p>
-                    <p className="text-sm text-muted-foreground mt-2">
-                      {busquedaNP.trim()
-                        ? "Verifica el número de nota de pedido"
-                        : "Los asesores pueden cargar archivos .ped al crear las notas"}
-                    </p>
+                {notasConPlanos.length === 0 ? (
+                  <div className="text-center py-8 text-muted-foreground">
+                    {busquedaNP ? "No se encontraron planos con ese número de NP" : "No hay planos cargados aún"}
                   </div>
-                )}
-
-                {notasConPlanos.length > 0 && (
-                  <div className="grid gap-4">
-                    {notasConPlanos.map((np) => (
-                      <Card key={np.id} className="border-yellow-600/20">
-                        <CardHeader className="pb-3">
-                          <div className="flex items-start justify-between">
-                            <div>
-                              <CardTitle className="text-lg">NP: {np.numero}</CardTitle>
-                              <p className="text-sm text-muted-foreground mt-1">
-                                Asesor: {np.asesorNombre} • {format(np.fechaCreacion, "dd/MM/yyyy")}
-                              </p>
-                              <p className="text-sm text-muted-foreground">
-                                Fecha de corte: {format(np.fechaCorte, "dd/MM/yyyy")}
-                              </p>
+                ) : (
+                  notasConPlanos.map((np) => (
+                    <div key={np.id} className="border rounded-lg p-4">
+                      <div className="flex items-center justify-between mb-3">
+                        <div>
+                          <span className="font-mono font-bold text-primary">{np.numero}</span>
+                          <span className="mx-2">-</span>
+                          <span>{np.cliente}</span>
+                        </div>
+                        <Badge
+                          variant={np.estado === "completado" || np.estado === "cerrado" ? "default" : "secondary"}
+                        >
+                          {np.estado}
+                        </Badge>
+                      </div>
+                      <div className="grid gap-2">
+                        {np.archivos_ped?.map((archivo, index) => (
+                          <div key={index} className="flex items-center justify-between bg-muted/50 rounded p-2">
+                            <div className="flex items-center gap-2">
+                              <FileText className="h-4 w-4 text-muted-foreground" />
+                              <span className="text-sm">{archivo.nombre}</span>
+                              {archivo.fechaSubida && (
+                                <span className="text-xs text-muted-foreground">
+                                  ({format(new Date(archivo.fechaSubida), "dd/MM/yyyy HH:mm")})
+                                </span>
+                              )}
                             </div>
-                            <div
-                              className={`px-2 py-1 rounded-full text-xs font-medium ${
-                                np.estado === "completado" || np.estado === "cerrado"
-                                  ? "bg-green-500/20 text-green-400"
-                                  : np.estado === "en_corte" || np.estado === "en_enchape"
-                                    ? "bg-yellow-500/20 text-yellow-400"
-                                    : "bg-blue-500/20 text-blue-400"
-                              }`}
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              onClick={() => descargarPlano(archivo)}
+                              className="flex items-center gap-1"
                             >
-                              {np.estado.toUpperCase().replace("_", " ")}
-                            </div>
+                              <Download className="h-3 w-3" />
+                              Descargar
+                            </Button>
                           </div>
-                        </CardHeader>
-                        <CardContent>
-                          <div className="grid grid-cols-2 gap-4 mb-4 text-sm">
-                            <div>
-                              <span className="text-muted-foreground">Láminas:</span>
-                              <span className="ml-2 font-medium">{np.cantidadLaminas}</span>
-                            </div>
-                            <div>
-                              <span className="text-muted-foreground">Material:</span>
-                              <span className="ml-2 font-medium">{np.tipoMaterial.toUpperCase()}</span>
-                            </div>
-                            {np.cantoRigido > 0 && (
-                              <div>
-                                <span className="text-muted-foreground">Canto Rígido:</span>
-                                <span className="ml-2 font-medium">{np.cantoRigido}m</span>
-                              </div>
-                            )}
-                            {np.cantoFlexible > 0 && (
-                              <div>
-                                <span className="text-muted-foreground">Canto Flexible:</span>
-                                <span className="ml-2 font-medium">{np.cantoFlexible}m</span>
-                              </div>
-                            )}
-                          </div>
-
-                          <div className="border-t pt-4">
-                            <p className="text-sm font-medium mb-3 flex items-center">
-                              <FileText className="h-4 w-4 mr-2 text-yellow-400" />
-                              Archivos .ped ({np.archivosPed?.length || 0})
-                            </p>
-                            <div className="space-y-2">
-                              {np.archivosPed?.map((archivo, idx) => (
-                                <div
-                                  key={idx}
-                                  className="flex items-center justify-between bg-muted/30 p-3 rounded-lg hover:bg-muted/50 transition-colors"
-                                >
-                                  <div className="flex-1 min-w-0 mr-4">
-                                    <p className="text-sm font-medium truncate">{archivo.nombre}</p>
-                                    <p className="text-xs text-muted-foreground">
-                                      Subido el {format(new Date(archivo.fechaSubida), "dd/MM/yyyy HH:mm")}
-                                    </p>
-                                  </div>
-                                  <Button
-                                    onClick={() => descargarPlano(archivo)}
-                                    className="bg-yellow-600 hover:bg-yellow-500 text-black"
-                                    size="sm"
-                                  >
-                                    <Download className="h-4 w-4 mr-2" />
-                                    Descargar
-                                  </Button>
-                                </div>
-                              ))}
-                            </div>
-                          </div>
-                        </CardContent>
-                      </Card>
-                    ))}
-                  </div>
+                        ))}
+                      </div>
+                    </div>
+                  ))
                 )}
               </div>
             </CardContent>
@@ -699,48 +800,44 @@ export function JefeVentasView() {
         </TabsContent>
 
         <TabsContent value="usuarios" className="space-y-4">
-          <div className="grid gap-4 lg:grid-cols-2">
+          <div className="grid gap-4 md:grid-cols-2">
             <Card>
               <CardHeader>
                 <CardTitle className="flex items-center gap-2">
                   <UserPlus className="h-5 w-5" />
                   Crear Nuevo Usuario
                 </CardTitle>
-                <CardDescription>Agregar cortadores o asesores de ventas al sistema</CardDescription>
               </CardHeader>
               <CardContent className="space-y-4">
                 <div className="space-y-2">
                   <Label htmlFor="nombre">Nombre Completo</Label>
                   <Input
                     id="nombre"
-                    placeholder="Juan Pérez"
                     value={nuevoUsuario.nombre}
                     onChange={(e) => setNuevoUsuario({ ...nuevoUsuario, nombre: e.target.value })}
+                    placeholder="Ej: Juan Pérez"
                   />
                 </div>
-
                 <div className="space-y-2">
-                  <Label htmlFor="email">Email</Label>
+                  <Label htmlFor="email">Correo Electrónico</Label>
                   <Input
                     id="email"
                     type="email"
-                    placeholder="juan@mosquera.com"
                     value={nuevoUsuario.email}
                     onChange={(e) => setNuevoUsuario({ ...nuevoUsuario, email: e.target.value })}
+                    placeholder="Ej: juan@empresa.com"
                   />
                 </div>
-
                 <div className="space-y-2">
                   <Label htmlFor="password">Contraseña</Label>
                   <Input
                     id="password"
                     type="password"
-                    placeholder="••••••••"
                     value={nuevoUsuario.password}
                     onChange={(e) => setNuevoUsuario({ ...nuevoUsuario, password: e.target.value })}
+                    placeholder="Mínimo 6 caracteres"
                   />
                 </div>
-
                 <div className="space-y-2">
                   <Label htmlFor="role">Rol</Label>
                   <Select
@@ -749,7 +846,7 @@ export function JefeVentasView() {
                       setNuevoUsuario({ ...nuevoUsuario, role: value })
                     }
                   >
-                    <SelectTrigger id="role">
+                    <SelectTrigger>
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
@@ -759,9 +856,7 @@ export function JefeVentasView() {
                     </SelectContent>
                   </Select>
                 </div>
-
                 <Button onClick={handleCrearUsuario} className="w-full">
-                  <UserPlus className="mr-2 h-4 w-4" />
                   Crear Usuario
                 </Button>
               </CardContent>
@@ -769,51 +864,37 @@ export function JefeVentasView() {
 
             <Card>
               <CardHeader>
-                <CardTitle className="flex items-center gap-2">
-                  <Users className="h-5 w-5" />
-                  Usuarios Registrados
-                </CardTitle>
-                <CardDescription>Total: {usuarios.length} usuarios</CardDescription>
+                <CardTitle>Usuarios Registrados</CardTitle>
+                <CardDescription>Lista de usuarios activos en el sistema</CardDescription>
               </CardHeader>
               <CardContent>
-                <div className="space-y-3 max-h-96 overflow-y-auto">
-                  {usuarios.map((usuario) => (
-                    <div
-                      key={usuario.id}
-                      className="flex items-center justify-between p-3 rounded-lg border border-border hover:bg-accent/50 transition-colors"
-                    >
-                      <div className="space-y-1">
-                        <p className="font-medium">{usuario.nombre}</p>
-                        <p className="text-sm text-muted-foreground">{usuario.email}</p>
-                        <Badge
-                          variant={usuario.role === "jefe_ventas" ? "default" : "secondary"}
-                          className={
-                            usuario.role === "cortador"
-                              ? "bg-blue-500"
-                              : usuario.role === "asesor_ventas"
-                                ? "bg-green-500"
-                                : ""
-                          }
-                        >
-                          {usuario.role === "jefe_ventas"
-                            ? "Jefe de Ventas"
-                            : usuario.role === "cortador"
-                              ? "Cortador"
+                <div className="space-y-2 max-h-80 overflow-auto">
+                  {usuarios.map((u) => (
+                    <div key={u.id} className="flex items-center justify-between p-3 bg-muted/50 rounded-lg">
+                      <div>
+                        <p className="font-medium">{u.nombre}</p>
+                        <p className="text-xs text-muted-foreground">{u.email}</p>
+                        <Badge variant="outline" className="mt-1 text-xs">
+                          {u.role === "cortador"
+                            ? "Cortador"
+                            : u.role === "jefe_ventas"
+                              ? "Jefe de Ventas"
                               : "Asesor de Ventas"}
                         </Badge>
                       </div>
-                      {usuario.role !== "jefe_ventas" && (
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          onClick={() => handleEliminarUsuario(usuario.id)}
-                          className="text-destructive hover:text-destructive hover:bg-destructive/10"
-                        >
-                          <Trash2 className="h-4 w-4" />
-                        </Button>
-                      )}
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="text-destructive hover:text-destructive"
+                        onClick={() => handleEliminarUsuario(u.id)}
+                      >
+                        <Trash2 className="h-4 w-4" />
+                      </Button>
                     </div>
                   ))}
+                  {usuarios.length === 0 && (
+                    <div className="text-center py-4 text-muted-foreground">No hay usuarios registrados</div>
+                  )}
                 </div>
               </CardContent>
             </Card>
