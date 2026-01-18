@@ -244,17 +244,39 @@ export function CortadorView() {
       .order("numero_lamina")
 
     if (registrosCorte && registrosCorte.length > 0) {
-      // Usar registros existentes
-      const laminas: LaminaCorteLocal[] = registrosCorte.map((r: RegistroCorte) => ({
-        id: r.id,
-        numero: r.numero_lamina,
-        estado: r.estado,
-        horaInicio: r.hora_inicio ? new Date(r.hora_inicio) : null,
-        horaFin: r.hora_fin ? new Date(r.hora_fin) : null,
-        tiempoTotal: r.tiempo_total || 0,
-        tiempoPausado: r.tiempo_pausado || 0,
-        pausaActual: null,
-      }))
+      // Cargar pausas activas para restaurar estado de cortes
+      const laminasConPausa = await Promise.all(
+        registrosCorte.map(async (r: RegistroCorte) => {
+          let pausaActual: Date | null = null
+          
+          // Si está pausado, buscar la pausa activa
+          if (r.estado === "pausado") {
+            const { data: pausaActiva } = await supabase
+              .from("pausas")
+              .select("*")
+              .eq("registro_corte_id", r.id)
+              .is("hora_fin", null)
+              .single()
+            
+            if (pausaActiva) {
+              pausaActual = new Date(pausaActiva.hora_inicio)
+            }
+          }
+          
+          return {
+            id: r.id,
+            numero: r.numero_lamina,
+            estado: r.estado as "pendiente" | "en_proceso" | "pausado" | "completado",
+            horaInicio: r.hora_inicio ? new Date(r.hora_inicio) : null,
+            horaFin: r.hora_fin ? new Date(r.hora_fin) : null,
+            tiempoTotal: r.tiempo_total || 0,
+            tiempoPausado: r.tiempo_pausado || 0,
+            pausaActual,
+          }
+        })
+      )
+      
+      const laminas: LaminaCorteLocal[] = laminasConPausa
       setLaminasCorte(laminas)
 
       const laminasActivas = new Set<number>()
@@ -372,9 +394,19 @@ export function CortadorView() {
       }
     }
 
+    // Determinar la vista correcta basándose en el estado de la nota y los procesos activos
     if (!nota.corte_completado) {
-      setVistaActual("seleccion")
+      // Si hay láminas en proceso, ir directo al corte
+      const hayLaminasActivas = registrosCorte?.some(
+        (r: RegistroCorte) => r.estado === "en_proceso" || r.estado === "pausado"
+      )
+      if (hayLaminasActivas) {
+        setVistaActual("corte")
+      } else {
+        setVistaActual("seleccion")
+      }
     } else {
+      // Corte completado, ir a enchape
       setVistaActual("enchape")
     }
   }

@@ -26,8 +26,8 @@ const cortadoresData = [
 ]
 
 const maquinasData = [
-  { nombre: "Striebig", value: 68, color: "hsl(var(--primary))" },
-  { nombre: "Fravol", value: 32, color: "hsl(var(--accent))" },
+  { nombre: "Striebig", value: 68, color: "#3B82F6" },
+  { nombre: "Fravol", value: 32, color: "#10B981" },
 ]
 
 const tendenciaData = [
@@ -71,13 +71,8 @@ export function EstadisticasView() {
                     }}
                   />
                   <Legend />
-                  <Bar dataKey="cortes" fill="hsl(var(--primary))" radius={[8, 8, 0, 0]} name="Cortes realizados" />
-                  <Bar
-                    dataKey="promedio"
-                    fill="hsl(var(--accent))"
-                    radius={[8, 8, 0, 0]}
-                    name="Tiempo promedio (seg)"
-                  />
+                  <Bar dataKey="cortes" fill="#3B82F6" radius={[8, 8, 0, 0]} name="Cortes realizados" />
+                  <Bar dataKey="promedio" fill="#F59E0B" radius={[8, 8, 0, 0]} name="Tiempo promedio (seg)" />
                 </BarChart>
               </ResponsiveContainer>
 
@@ -140,7 +135,7 @@ export function EstadisticasView() {
                 <div className="flex flex-col justify-center space-y-4">
                   <div className="rounded-lg border border-border bg-background p-4">
                     <div className="flex items-center gap-3 mb-3">
-                      <div className="h-4 w-4 rounded" style={{ backgroundColor: "hsl(var(--primary))" }} />
+                      <div className="h-4 w-4 rounded" style={{ backgroundColor: "#3B82F6" }} />
                       <h4 className="font-semibold text-foreground">Sierra Striebig</h4>
                     </div>
                     <div className="space-y-1 text-sm">
@@ -157,7 +152,7 @@ export function EstadisticasView() {
 
                   <div className="rounded-lg border border-border bg-background p-4">
                     <div className="flex items-center gap-3 mb-3">
-                      <div className="h-4 w-4 rounded" style={{ backgroundColor: "hsl(var(--accent))" }} />
+                      <div className="h-4 w-4 rounded" style={{ backgroundColor: "#10B981" }} />
                       <h4 className="font-semibold text-foreground">Enchapadora Fravol</h4>
                     </div>
                     <div className="space-y-1 text-sm">
@@ -208,18 +203,18 @@ export function EstadisticasView() {
                     yAxisId="left"
                     type="monotone"
                     dataKey="eficiencia"
-                    stroke="hsl(var(--primary))"
+                    stroke="#10B981"
                     strokeWidth={3}
-                    dot={{ r: 5 }}
+                    dot={{ fill: "#10B981", r: 5 }}
                     name="Eficiencia (%)"
                   />
                   <Line
                     yAxisId="right"
                     type="monotone"
                     dataKey="cortes"
-                    stroke="hsl(var(--accent))"
+                    stroke="#3B82F6"
                     strokeWidth={3}
-                    dot={{ r: 5 }}
+                    dot={{ fill: "#3B82F6", r: 5 }}
                     name="Total cortes"
                   />
                 </LineChart>

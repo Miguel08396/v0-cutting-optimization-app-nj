@@ -44,19 +44,31 @@ import { useRealtimeNotas, useRealtimeDashboard } from "@/lib/hooks/use-realtime
 import { registerUser, getAllUsers, deactivateUser } from "@/lib/services/auth-service"
 import type { Usuario, NotaPedido } from "@/lib/supabase/types"
 
-const COLORS = ["#FFEB3B", "#1E1E1E", "#FDD835", "#424242", "#FFEE58"]
+const COLORS = ["#3B82F6", "#10B981", "#F59E0B", "#EF4444", "#8B5CF6"]
 
 function formatTiempo(segundos: number): string {
-  const minutos = Math.round(segundos / 60)
-  if (minutos < 60) {
-    return `${minutos} min`
+  if (!segundos || segundos <= 0) return "0s"
+  
+  // Los tiempos ya vienen en segundos
+  const totalSegundos = Math.round(segundos)
+  const horas = Math.floor(totalSegundos / 3600)
+  const minutos = Math.floor((totalSegundos % 3600) / 60)
+  const segs = totalSegundos % 60
+
+  if (horas > 0) {
+    if (minutos > 0 && segs > 0) {
+      return `${horas}h ${minutos}m ${segs}s`
+    } else if (minutos > 0) {
+      return `${horas}h ${minutos}m`
+    }
+    return `${horas}h ${segs}s`
   }
-  const horas = Math.floor(minutos / 60)
-  const minutosRestantes = minutos % 60
-  if (minutosRestantes === 0) {
-    return `${horas}h`
+  
+  if (minutos > 0) {
+    return `${minutos}m ${segs}s`
   }
-  return `${horas}h ${minutosRestantes}m`
+  
+  return `${segs}s`
 }
 
 function getPrioridadInfo(tipo: string | null | undefined): { color: string; label: string; bgClass: string } {
@@ -273,10 +285,12 @@ export function JefeVentasView() {
   const totalesCompletados = cortesCompletados.reduce(
     (acc, np) => {
       return {
-        metrosRigido: acc.metrosRigido + (np.metros_rigido || 0),
-        metrosFlexible: acc.metrosFlexible + (np.metros_flexible || 0),
+        metrosRigido: acc.metrosRigido + (np.canto_rigido || 0),
+        metrosFlexible: acc.metrosFlexible + (np.canto_flexible || 0),
         totalLaminas: acc.totalLaminas + (np.cantidad_laminas || 0),
         totalDesplazamientos: acc.totalDesplazamientos + (np.cantidad_desplazamientos || 0),
+        tiempoEnchapeRigido: acc.tiempoEnchapeRigido + (np.tiempo_enchape_rigido || 0),
+        tiempoEnchapeFlexible: acc.tiempoEnchapeFlexible + (np.tiempo_enchape_flexible || 0),
         tiempoTotal:
           acc.tiempoTotal +
           (np.tiempo_corte || 0) +
@@ -285,7 +299,7 @@ export function JefeVentasView() {
         tiempoPausado: acc.tiempoPausado + (np.tiempo_pausado_corte || 0) + (np.tiempo_pausado_enchape || 0),
       }
     },
-    { metrosRigido: 0, metrosFlexible: 0, totalLaminas: 0, totalDesplazamientos: 0, tiempoTotal: 0, tiempoPausado: 0 },
+    { metrosRigido: 0, metrosFlexible: 0, totalLaminas: 0, totalDesplazamientos: 0, tiempoEnchapeRigido: 0, tiempoEnchapeFlexible: 0, tiempoTotal: 0, tiempoPausado: 0 },
   )
 
   if (isLoading) {
@@ -423,7 +437,7 @@ export function JefeVentasView() {
                       }}
                       labelStyle={{ color: "hsl(var(--foreground))" }}
                     />
-                    <Bar dataKey="cortes" fill="#FFEB3B" name="Cortes Completados" radius={[8, 8, 0, 0]} />
+                    <Bar dataKey="cortes" fill="#3B82F6" name="Cortes Completados" radius={[8, 8, 0, 0]} />
                   </BarChart>
                 </ResponsiveContainer>
               ) : (
@@ -454,8 +468,8 @@ export function JefeVentasView() {
                         color: "hsl(var(--foreground))",
                       }}
                     />
-                    <Bar dataKey="tiempoPromedio" fill="#1E1E1E" name="Tiempo Activo (min)" radius={[0, 8, 8, 0]} />
-                    <Bar dataKey="tiempoPausado" fill="#FFA726" name="Tiempo Pausado (min)" radius={[0, 8, 8, 0]} />
+                    <Bar dataKey="tiempoPromedio" fill="#10B981" name="Tiempo Activo (min)" radius={[0, 8, 8, 0]} />
+                    <Bar dataKey="tiempoPausado" fill="#F59E0B" name="Tiempo Pausado (min)" radius={[0, 8, 8, 0]} />
                   </BarChart>
                 </ResponsiveContainer>
               ) : (
@@ -488,7 +502,7 @@ export function JefeVentasView() {
                       dataKey="value"
                     >
                       {distribucionMaquinas.map((entry, index) => (
-                        <Cell key={`cell-${index}`} fill={index === 0 ? "#FFEB3B" : "#1E1E1E"} />
+                        <Cell key={`cell-${index}`} fill={index === 0 ? "#3B82F6" : "#10B981"} />
                       ))}
                     </Pie>
                     <Tooltip
@@ -534,18 +548,18 @@ export function JefeVentasView() {
                   <Line
                     type="monotone"
                     dataKey="cortes"
-                    stroke="#FFEB3B"
+                    stroke="#3B82F6"
                     strokeWidth={3}
-                    dot={{ fill: "#FFEB3B", r: 5 }}
+                    dot={{ fill: "#3B82F6", r: 5 }}
                     activeDot={{ r: 8 }}
                     name="Iniciados"
                   />
                   <Line
                     type="monotone"
                     dataKey="completados"
-                    stroke="#4CAF50"
+                    stroke="#10B981"
                     strokeWidth={3}
-                    dot={{ fill: "#4CAF50", r: 5 }}
+                    dot={{ fill: "#10B981", r: 5 }}
                     name="Completados"
                   />
                 </LineChart>
@@ -558,25 +572,23 @@ export function JefeVentasView() {
           <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-5">
             <Card className="border-l-4 border-l-blue-500">
               <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-                <CardTitle className="text-sm font-medium">Metros Rígido</CardTitle>
+                <CardTitle className="text-sm font-medium">Canto Rígido</CardTitle>
                 <Ruler className="h-4 w-4 text-blue-500" />
               </CardHeader>
               <CardContent>
-                <div className="text-2xl font-bold text-blue-600">{totalesCompletados.metrosRigido.toFixed(2)} m</div>
-                <p className="text-xs text-muted-foreground">Total enchape rígido</p>
+                <div className="text-2xl font-bold text-blue-600">{totalesCompletados.metrosRigido} m</div>
+                <p className="text-xs text-muted-foreground">Tiempo: {formatTiempo(totalesCompletados.tiempoEnchapeRigido)}</p>
               </CardContent>
             </Card>
 
             <Card className="border-l-4 border-l-purple-500">
               <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-                <CardTitle className="text-sm font-medium">Metros Flexible</CardTitle>
+                <CardTitle className="text-sm font-medium">Canto Flexible</CardTitle>
                 <Ruler className="h-4 w-4 text-purple-500" />
               </CardHeader>
               <CardContent>
-                <div className="text-2xl font-bold text-purple-600">
-                  {totalesCompletados.metrosFlexible.toFixed(2)} m
-                </div>
-                <p className="text-xs text-muted-foreground">Total enchape flexible</p>
+                <div className="text-2xl font-bold text-purple-600">{totalesCompletados.metrosFlexible} m</div>
+                <p className="text-xs text-muted-foreground">Tiempo: {formatTiempo(totalesCompletados.tiempoEnchapeFlexible)}</p>
               </CardContent>
             </Card>
 
@@ -673,10 +685,8 @@ export function JefeVentasView() {
                           <td className="p-2 text-right text-sm font-medium text-orange-600">
                             {np.cantidad_desplazamientos || 0}
                           </td>
-                          <td className="p-2 text-right text-sm text-blue-600">{(np.metros_rigido || 0).toFixed(2)}</td>
-                          <td className="p-2 text-right text-sm text-purple-600">
-                            {(np.metros_flexible || 0).toFixed(2)}
-                          </td>
+                          <td className="p-2 text-right text-sm text-blue-600">{np.canto_rigido || 0}m</td>
+                          <td className="p-2 text-right text-sm text-purple-600">{np.canto_flexible || 0}m</td>
                           <td className="p-2 text-right text-sm">{formatTiempo(np.tiempo_corte || 0)}</td>
                           <td className="p-2 text-right text-sm">
                             {formatTiempo((np.tiempo_enchape_rigido || 0) + (np.tiempo_enchape_flexible || 0))}
@@ -694,8 +704,8 @@ export function JefeVentasView() {
                       </td>
                       <td className="p-2 text-right">{totalesCompletados.totalLaminas}</td>
                       <td className="p-2 text-right text-orange-600">{totalesCompletados.totalDesplazamientos}</td>
-                      <td className="p-2 text-right text-blue-600">{totalesCompletados.metrosRigido.toFixed(2)}</td>
-                      <td className="p-2 text-right text-purple-600">{totalesCompletados.metrosFlexible.toFixed(2)}</td>
+                      <td className="p-2 text-right text-blue-600">{totalesCompletados.metrosRigido}m</td>
+                      <td className="p-2 text-right text-purple-600">{totalesCompletados.metrosFlexible}m</td>
                       <td className="p-2 text-right">
                         {formatTiempo(cortesCompletados.reduce((acc, np) => acc + (np.tiempo_corte || 0), 0))}
                       </td>
