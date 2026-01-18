@@ -295,17 +295,48 @@ export function CortadorView() {
     const { data: registrosEnchape } = await supabase.from("registros_enchape").select("*").eq("nota_id", nota.id)
 
     if (registrosEnchape && registrosEnchape.length > 0) {
-      const enchapes: EnchapeRegistroLocal[] = registrosEnchape.map((r: RegistroEnchape) => ({
-        id: r.id,
-        tipo: r.tipo,
-        estado: r.estado,
-        horaInicio: r.hora_inicio ? new Date(r.hora_inicio) : null,
-        horaFin: r.hora_fin ? new Date(r.hora_fin) : null,
-        tiempoTotal: r.tiempo_total || 0,
-        tiempoPausado: r.tiempo_pausado || 0,
-        pausaActual: null,
-      }))
+      // Cargar pausas activas para restaurar estado de enchapes
+      const enchapesConPausa = await Promise.all(
+        registrosEnchape.map(async (r: RegistroEnchape) => {
+          let pausaActual: Date | null = null
+          
+          // Si está pausado, buscar la pausa activa
+          if (r.estado === "pausado") {
+            const { data: pausaActiva } = await supabase
+              .from("pausas")
+              .select("*")
+              .eq("registro_enchape_id", r.id)
+              .is("hora_fin", null)
+              .single()
+            
+            if (pausaActiva) {
+              pausaActual = new Date(pausaActiva.hora_inicio)
+            }
+          }
+          
+          return {
+            id: r.id,
+            tipo: r.tipo as "rigido" | "flexible",
+            estado: r.estado as "pendiente" | "en_proceso" | "pausado" | "completado",
+            horaInicio: r.hora_inicio ? new Date(r.hora_inicio) : null,
+            horaFin: r.hora_fin ? new Date(r.hora_fin) : null,
+            tiempoTotal: r.tiempo_total || 0,
+            tiempoPausado: r.tiempo_pausado || 0,
+            pausaActual,
+          }
+        })
+      )
+      
+      const enchapes: EnchapeRegistroLocal[] = enchapesConPausa
       setEnchapesRegistro(enchapes)
+      
+      // Restaurar enchape en proceso si existe
+      const enchapeActivo = enchapes.find((e) => e.estado === "en_proceso" || e.estado === "pausado")
+      if (enchapeActivo) {
+        setEnchapeEnProceso(enchapeActivo.tipo)
+      } else {
+        setEnchapeEnProceso(null)
+      }
     } else {
       const nuevosEnchapes: Array<{
         nota_id: string
