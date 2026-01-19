@@ -662,6 +662,16 @@ export function CortadorView() {
     if (requiereEnchape) {
       setVistaActual("enchape")
     } else {
+      // Si no requiere enchape, cerrar la nota completamente
+      await supabase
+        .from("notas_pedido")
+        .update({
+          estado: "completado",
+          enchape_completado: true,
+          fecha_fin_enchape: new Date().toISOString(),
+        })
+        .eq("id", notaSeleccionada.id)
+      
       cargarNotas()
       setVistaActual("lista")
       setNotaSeleccionada(null)

@@ -47,68 +47,120 @@ import { Printer } from "lucide-react"
 
 const COLORS = ["#3B82F6", "#10B981", "#F59E0B", "#EF4444", "#8B5CF6"]
 
+// Función para formatear segundos a horas:minutos:segundos
+function formatTiempoHMS(segundos: number): string {
+  if (!segundos || segundos <= 0) return "0h 0m 0s"
+  const horas = Math.floor(segundos / 3600)
+  const minutos = Math.floor((segundos % 3600) / 60)
+  const segs = Math.floor(segundos % 60)
+  return `${horas}h ${minutos}m ${segs}s`
+}
+
+// Tipo para datos completos del cortador
+interface DatosCortadorPDF {
+  nombre: string
+  cortes: number
+  laminas: number
+  tiempoCorteTotal: number
+  tiempoPausadoCorte: number
+  cantoRigido: number
+  cantoFlexible: number
+  tiempoEnchapeRigido: number
+  tiempoEnchapeFlexible: number
+}
+
 // Función para generar PDF de rendimiento
 function generarPDFRendimiento(
-  rendimientoCortadores: { nombre: string; cortes: number; tiempoPromedio: number; tiempoPausado: number }[],
-  totales: { totalCortes: number; tiempoPromedioGeneral: number; tiempoPausadoGeneral: number },
+  datosCortadores: DatosCortadorPDF[],
   mes: string
 ) {
+  const totales = datosCortadores.reduce((acc, c) => ({
+    cortes: acc.cortes + c.cortes,
+    laminas: acc.laminas + c.laminas,
+    tiempoCorteTotal: acc.tiempoCorteTotal + c.tiempoCorteTotal,
+    tiempoPausadoCorte: acc.tiempoPausadoCorte + c.tiempoPausadoCorte,
+    cantoRigido: acc.cantoRigido + c.cantoRigido,
+    cantoFlexible: acc.cantoFlexible + c.cantoFlexible,
+    tiempoEnchapeRigido: acc.tiempoEnchapeRigido + c.tiempoEnchapeRigido,
+    tiempoEnchapeFlexible: acc.tiempoEnchapeFlexible + c.tiempoEnchapeFlexible,
+  }), { cortes: 0, laminas: 0, tiempoCorteTotal: 0, tiempoPausadoCorte: 0, cantoRigido: 0, cantoFlexible: 0, tiempoEnchapeRigido: 0, tiempoEnchapeFlexible: 0 })
+
   const contenidoHTML = `
     <!DOCTYPE html>
     <html>
     <head>
       <title>Informe de Rendimiento - ${mes}</title>
       <style>
-        body { font-family: Arial, sans-serif; padding: 40px; color: #333; }
-        h1 { text-align: center; color: #1e40af; margin-bottom: 10px; }
-        h2 { text-align: center; color: #6b7280; font-size: 14px; margin-bottom: 30px; }
-        table { width: 100%; border-collapse: collapse; margin-top: 20px; }
-        th { background: #3b82f6; color: white; padding: 12px 8px; text-align: left; }
-        td { padding: 10px 8px; border-bottom: 1px solid #e5e7eb; }
+        body { font-family: Arial, sans-serif; padding: 30px; color: #333; font-size: 11px; }
+        h1 { text-align: center; color: #1e40af; margin-bottom: 5px; font-size: 18px; }
+        h2 { text-align: center; color: #6b7280; font-size: 12px; margin-bottom: 20px; }
+        table { width: 100%; border-collapse: collapse; margin-top: 15px; }
+        th { background: #3b82f6; color: white; padding: 8px 4px; text-align: center; font-size: 10px; }
+        td { padding: 6px 4px; border-bottom: 1px solid #e5e7eb; text-align: center; font-size: 10px; }
         tr:nth-child(even) { background: #f9fafb; }
         .totales { background: #1e40af !important; color: white; font-weight: bold; }
-        .numero { text-align: right; }
-        .header-info { display: flex; justify-content: space-between; margin-bottom: 20px; border-bottom: 2px solid #3b82f6; padding-bottom: 10px; }
-        .fecha { color: #6b7280; font-size: 12px; }
-        @media print { body { padding: 20px; } }
+        .nombre { text-align: left !important; }
+        .header-info { display: flex; justify-content: space-between; margin-bottom: 15px; border-bottom: 2px solid #3b82f6; padding-bottom: 8px; }
+        .fecha { color: #6b7280; font-size: 10px; }
+        .seccion { margin-top: 25px; }
+        .seccion-titulo { background: #10b981; color: white; padding: 8px; font-weight: bold; margin-bottom: 10px; }
+        @media print { body { padding: 15px; } }
       </style>
     </head>
     <body>
       <div class="header-info">
-        <span><strong>Centro de Corte</strong></span>
+        <span><strong>Centro de Corte - Informe de Rendimiento</strong></span>
         <span class="fecha">Generado: ${new Date().toLocaleDateString('es-ES', { day: '2-digit', month: 'long', year: 'numeric', hour: '2-digit', minute: '2-digit' })}</span>
       </div>
-      <h1>Informe de Rendimiento por Cortador</h1>
-      <h2>Período: ${mes}</h2>
+      <h1>Comparativo de Rendimiento por Cortador</h1>
+      <h2>Periodo: ${mes}</h2>
+      
       <table>
         <thead>
           <tr>
-            <th>Cortador</th>
-            <th class="numero">Cortes Realizados</th>
-            <th class="numero">Tiempo Promedio (min)</th>
-            <th class="numero">Tiempo Pausado (min)</th>
-            <th class="numero">Eficiencia</th>
+            <th class="nombre">Cortador</th>
+            <th>Trabajos</th>
+            <th>Laminas</th>
+            <th>Tiempo Corte</th>
+            <th>T. Pausado Corte</th>
+            <th>Canto Rigido (m)</th>
+            <th>T. Enchape Rigido</th>
+            <th>Canto Flexible (m)</th>
+            <th>T. Enchape Flexible</th>
+            <th>Eficiencia</th>
           </tr>
         </thead>
         <tbody>
-          ${rendimientoCortadores.map(c => {
-            const eficiencia = c.tiempoPromedio > 0 ? Math.round(((c.tiempoPromedio - c.tiempoPausado) / c.tiempoPromedio) * 100) : 100
+          ${datosCortadores.map(c => {
+            const tiempoTotalTrabajo = c.tiempoCorteTotal + c.tiempoEnchapeRigido + c.tiempoEnchapeFlexible
+            const tiempoTotalPausado = c.tiempoPausadoCorte
+            const eficiencia = tiempoTotalTrabajo > 0 ? Math.round(((tiempoTotalTrabajo - tiempoTotalPausado) / tiempoTotalTrabajo) * 100) : 100
             return `
               <tr>
-                <td>${c.nombre}</td>
-                <td class="numero">${c.cortes}</td>
-                <td class="numero">${c.tiempoPromedio}</td>
-                <td class="numero">${c.tiempoPausado}</td>
-                <td class="numero">${eficiencia}%</td>
+                <td class="nombre">${c.nombre}</td>
+                <td>${c.cortes}</td>
+                <td>${c.laminas}</td>
+                <td>${formatTiempoHMS(c.tiempoCorteTotal)}</td>
+                <td>${formatTiempoHMS(c.tiempoPausadoCorte)}</td>
+                <td>${c.cantoRigido}</td>
+                <td>${formatTiempoHMS(c.tiempoEnchapeRigido)}</td>
+                <td>${c.cantoFlexible}</td>
+                <td>${formatTiempoHMS(c.tiempoEnchapeFlexible)}</td>
+                <td>${eficiencia}%</td>
               </tr>
             `
           }).join('')}
           <tr class="totales">
-            <td>TOTALES</td>
-            <td class="numero">${totales.totalCortes}</td>
-            <td class="numero">${totales.tiempoPromedioGeneral}</td>
-            <td class="numero">${totales.tiempoPausadoGeneral}</td>
-            <td class="numero">${totales.tiempoPromedioGeneral > 0 ? Math.round(((totales.tiempoPromedioGeneral - totales.tiempoPausadoGeneral) / totales.tiempoPromedioGeneral) * 100) : 100}%</td>
+            <td class="nombre">TOTALES</td>
+            <td>${totales.cortes}</td>
+            <td>${totales.laminas}</td>
+            <td>${formatTiempoHMS(totales.tiempoCorteTotal)}</td>
+            <td>${formatTiempoHMS(totales.tiempoPausadoCorte)}</td>
+            <td>${totales.cantoRigido}</td>
+            <td>${formatTiempoHMS(totales.tiempoEnchapeRigido)}</td>
+            <td>${totales.cantoFlexible}</td>
+            <td>${formatTiempoHMS(totales.tiempoEnchapeFlexible)}</td>
+            <td>${totales.tiempoCorteTotal > 0 ? Math.round(((totales.tiempoCorteTotal - totales.tiempoPausadoCorte) / totales.tiempoCorteTotal) * 100) : 100}%</td>
           </tr>
         </tbody>
       </table>
@@ -505,15 +557,35 @@ export function JefeVentasView() {
                 variant="outline"
                 size="sm"
                 onClick={() => {
-                  const totalCortes = rendimientoCortadores.reduce((acc, c) => acc + c.cortes, 0)
-                  const tiempoPromedioGeneral = rendimientoCortadores.length > 0
-                    ? Math.round(rendimientoCortadores.reduce((acc, c) => acc + c.tiempoPromedio, 0) / rendimientoCortadores.length)
-                    : 0
-                  const tiempoPausadoGeneral = rendimientoCortadores.length > 0
-                    ? Math.round(rendimientoCortadores.reduce((acc, c) => acc + c.tiempoPausado, 0) / rendimientoCortadores.length)
-                    : 0
+                  // Construir datos completos por cortador
+                  const cortadoresDataMap = new Map<string, DatosCortadorPDF>()
+                  notasPedido.forEach((np) => {
+                    if (np.cortador_nombre && (np.estado === "completado" || np.estado === "cerrado")) {
+                      const existente = cortadoresDataMap.get(np.cortador_nombre) || {
+                        nombre: np.cortador_nombre,
+                        cortes: 0,
+                        laminas: 0,
+                        tiempoCorteTotal: 0,
+                        tiempoPausadoCorte: 0,
+                        cantoRigido: 0,
+                        cantoFlexible: 0,
+                        tiempoEnchapeRigido: 0,
+                        tiempoEnchapeFlexible: 0,
+                      }
+                      existente.cortes += 1
+                      existente.laminas += np.cantidad_laminas || 0
+                      existente.tiempoCorteTotal += np.tiempo_corte || 0
+                      existente.tiempoPausadoCorte += np.tiempo_pausado_corte || 0
+                      existente.cantoRigido += np.canto_rigido || 0
+                      existente.cantoFlexible += np.canto_flexible || 0
+                      existente.tiempoEnchapeRigido += np.tiempo_enchape_rigido || 0
+                      existente.tiempoEnchapeFlexible += np.tiempo_enchape_flexible || 0
+                      cortadoresDataMap.set(np.cortador_nombre, existente)
+                    }
+                  })
+                  const datosCortadores = Array.from(cortadoresDataMap.values())
                   const mesActual = new Date().toLocaleDateString('es-ES', { month: 'long', year: 'numeric' })
-                  generarPDFRendimiento(rendimientoCortadores, { totalCortes, tiempoPromedioGeneral, tiempoPausadoGeneral }, mesActual)
+                  generarPDFRendimiento(datosCortadores, mesActual)
                 }}
                 className="flex items-center gap-2"
               >

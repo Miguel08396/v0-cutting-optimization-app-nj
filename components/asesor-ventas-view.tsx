@@ -20,7 +20,7 @@ import { es } from "date-fns/locale"
 
 interface MaterialEntry {
   id: string
-  tipo: "aglomerado" | "crudo" | "mdf"
+  tipo: "aglomerado" | "crudo" | "mdf" | "madera_seca"
   cantidad: number
 }
 
@@ -368,6 +368,7 @@ export function AsesorVentasView() {
                         <SelectItem value="aglomerado">Aglomerado</SelectItem>
                         <SelectItem value="crudo">Crudo</SelectItem>
                         <SelectItem value="mdf">MDF</SelectItem>
+                        <SelectItem value="madera_seca">Madera Seca</SelectItem>
                       </SelectContent>
                     </Select>
                   </div>
