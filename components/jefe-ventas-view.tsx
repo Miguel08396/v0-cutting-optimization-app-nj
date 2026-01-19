@@ -43,8 +43,86 @@ import { createClient } from "@/lib/supabase/client"
 import { useRealtimeNotas, useRealtimeDashboard } from "@/lib/hooks/use-realtime"
 import { registerUser, getAllUsers, deactivateUser } from "@/lib/services/auth-service"
 import type { Usuario, NotaPedido } from "@/lib/supabase/types"
+import { Printer } from "lucide-react"
 
 const COLORS = ["#3B82F6", "#10B981", "#F59E0B", "#EF4444", "#8B5CF6"]
+
+// Función para generar PDF de rendimiento
+function generarPDFRendimiento(
+  rendimientoCortadores: { nombre: string; cortes: number; tiempoPromedio: number; tiempoPausado: number }[],
+  totales: { totalCortes: number; tiempoPromedioGeneral: number; tiempoPausadoGeneral: number },
+  mes: string
+) {
+  const contenidoHTML = `
+    <!DOCTYPE html>
+    <html>
+    <head>
+      <title>Informe de Rendimiento - ${mes}</title>
+      <style>
+        body { font-family: Arial, sans-serif; padding: 40px; color: #333; }
+        h1 { text-align: center; color: #1e40af; margin-bottom: 10px; }
+        h2 { text-align: center; color: #6b7280; font-size: 14px; margin-bottom: 30px; }
+        table { width: 100%; border-collapse: collapse; margin-top: 20px; }
+        th { background: #3b82f6; color: white; padding: 12px 8px; text-align: left; }
+        td { padding: 10px 8px; border-bottom: 1px solid #e5e7eb; }
+        tr:nth-child(even) { background: #f9fafb; }
+        .totales { background: #1e40af !important; color: white; font-weight: bold; }
+        .numero { text-align: right; }
+        .header-info { display: flex; justify-content: space-between; margin-bottom: 20px; border-bottom: 2px solid #3b82f6; padding-bottom: 10px; }
+        .fecha { color: #6b7280; font-size: 12px; }
+        @media print { body { padding: 20px; } }
+      </style>
+    </head>
+    <body>
+      <div class="header-info">
+        <span><strong>Centro de Corte</strong></span>
+        <span class="fecha">Generado: ${new Date().toLocaleDateString('es-ES', { day: '2-digit', month: 'long', year: 'numeric', hour: '2-digit', minute: '2-digit' })}</span>
+      </div>
+      <h1>Informe de Rendimiento por Cortador</h1>
+      <h2>Período: ${mes}</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>Cortador</th>
+            <th class="numero">Cortes Realizados</th>
+            <th class="numero">Tiempo Promedio (min)</th>
+            <th class="numero">Tiempo Pausado (min)</th>
+            <th class="numero">Eficiencia</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${rendimientoCortadores.map(c => {
+            const eficiencia = c.tiempoPromedio > 0 ? Math.round(((c.tiempoPromedio - c.tiempoPausado) / c.tiempoPromedio) * 100) : 100
+            return `
+              <tr>
+                <td>${c.nombre}</td>
+                <td class="numero">${c.cortes}</td>
+                <td class="numero">${c.tiempoPromedio}</td>
+                <td class="numero">${c.tiempoPausado}</td>
+                <td class="numero">${eficiencia}%</td>
+              </tr>
+            `
+          }).join('')}
+          <tr class="totales">
+            <td>TOTALES</td>
+            <td class="numero">${totales.totalCortes}</td>
+            <td class="numero">${totales.tiempoPromedioGeneral}</td>
+            <td class="numero">${totales.tiempoPausadoGeneral}</td>
+            <td class="numero">${totales.tiempoPromedioGeneral > 0 ? Math.round(((totales.tiempoPromedioGeneral - totales.tiempoPausadoGeneral) / totales.tiempoPromedioGeneral) * 100) : 100}%</td>
+          </tr>
+        </tbody>
+      </table>
+    </body>
+    </html>
+  `
+  
+  const ventana = window.open('', '_blank')
+  if (ventana) {
+    ventana.document.write(contenidoHTML)
+    ventana.document.close()
+    ventana.print()
+  }
+}
 
 function formatTiempo(segundos: number): string {
   if (!segundos || segundos <= 0) return "0s"
@@ -418,24 +496,47 @@ export function JefeVentasView() {
 
         <TabsContent value="rendimiento" className="space-y-4">
           <Card>
-            <CardHeader>
-              <CardTitle>Rendimiento por Cortador</CardTitle>
-              <CardDescription>Comparación de cortes realizados y tiempo promedio</CardDescription>
+            <CardHeader className="flex flex-row items-start justify-between">
+              <div>
+                <CardTitle>Rendimiento por Cortador</CardTitle>
+                <CardDescription>Comparación de cortes realizados y tiempo promedio</CardDescription>
+              </div>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => {
+                  const totalCortes = rendimientoCortadores.reduce((acc, c) => acc + c.cortes, 0)
+                  const tiempoPromedioGeneral = rendimientoCortadores.length > 0
+                    ? Math.round(rendimientoCortadores.reduce((acc, c) => acc + c.tiempoPromedio, 0) / rendimientoCortadores.length)
+                    : 0
+                  const tiempoPausadoGeneral = rendimientoCortadores.length > 0
+                    ? Math.round(rendimientoCortadores.reduce((acc, c) => acc + c.tiempoPausado, 0) / rendimientoCortadores.length)
+                    : 0
+                  const mesActual = new Date().toLocaleDateString('es-ES', { month: 'long', year: 'numeric' })
+                  generarPDFRendimiento(rendimientoCortadores, { totalCortes, tiempoPromedioGeneral, tiempoPausadoGeneral }, mesActual)
+                }}
+                className="flex items-center gap-2"
+              >
+                <Printer className="h-4 w-4" />
+                Imprimir Informe
+              </Button>
             </CardHeader>
             <CardContent className="h-80">
               {rendimientoCortadores.length > 0 ? (
                 <ResponsiveContainer width="100%" height="100%">
                   <BarChart data={rendimientoCortadores}>
-                    <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
-                    <XAxis dataKey="nombre" stroke="hsl(var(--foreground))" fontSize={12} />
-                    <YAxis stroke="hsl(var(--foreground))" fontSize={12} />
+                    <CartesianGrid strokeDasharray="3 3" stroke="#94a3b8" />
+                    <XAxis dataKey="nombre" stroke="#64748b" tick={{ fill: "#64748b" }} fontSize={12} />
+                    <YAxis stroke="#64748b" tick={{ fill: "#64748b" }} fontSize={12} />
                     <Tooltip
                       contentStyle={{
-                        backgroundColor: "hsl(var(--card))",
-                        border: "1px solid hsl(var(--border))",
-                        borderRadius: "var(--radius)",
+                        backgroundColor: "#ffffff",
+                        border: "1px solid #e2e8f0",
+                        borderRadius: "8px",
+                        color: "#1e293b",
                       }}
-                      labelStyle={{ color: "hsl(var(--foreground))" }}
+                      labelStyle={{ color: "#1e293b", fontWeight: "bold" }}
+                      itemStyle={{ color: "#334155" }}
                     />
                     <Bar dataKey="cortes" fill="#3B82F6" name="Cortes Completados" radius={[8, 8, 0, 0]} />
                   </BarChart>
@@ -457,16 +558,18 @@ export function JefeVentasView() {
               {rendimientoCortadores.length > 0 ? (
                 <ResponsiveContainer width="100%" height="100%">
                   <BarChart data={rendimientoCortadores} layout="vertical">
-                    <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
-                    <XAxis type="number" stroke="hsl(var(--foreground))" fontSize={12} />
-                    <YAxis dataKey="nombre" type="category" stroke="hsl(var(--foreground))" fontSize={12} width={100} />
+                    <CartesianGrid strokeDasharray="3 3" stroke="#94a3b8" />
+                    <XAxis type="number" stroke="#64748b" tick={{ fill: "#64748b" }} fontSize={12} />
+                    <YAxis dataKey="nombre" type="category" stroke="#64748b" tick={{ fill: "#64748b" }} fontSize={12} width={100} />
                     <Tooltip
                       contentStyle={{
-                        backgroundColor: "hsl(var(--card))",
-                        border: "1px solid hsl(var(--border))",
-                        borderRadius: "var(--radius)",
-                        color: "hsl(var(--foreground))",
+                        backgroundColor: "#ffffff",
+                        border: "1px solid #e2e8f0",
+                        borderRadius: "8px",
+                        color: "#1e293b",
                       }}
+                      labelStyle={{ color: "#1e293b", fontWeight: "bold" }}
+                      itemStyle={{ color: "#334155" }}
                     />
                     <Bar dataKey="tiempoPromedio" fill="#10B981" name="Tiempo Activo (min)" radius={[0, 8, 8, 0]} />
                     <Bar dataKey="tiempoPausado" fill="#F59E0B" name="Tiempo Pausado (min)" radius={[0, 8, 8, 0]} />
@@ -495,11 +598,12 @@ export function JefeVentasView() {
                       data={distribucionMaquinas}
                       cx="50%"
                       cy="50%"
-                      labelLine={false}
+                      labelLine={true}
                       label={({ name, percent }) => `${name}: ${(percent * 100).toFixed(0)}%`}
                       outerRadius={120}
                       fill="#8884d8"
                       dataKey="value"
+                      labelStyle={{ fill: "#64748b", fontSize: 12 }}
                     >
                       {distribucionMaquinas.map((entry, index) => (
                         <Cell key={`cell-${index}`} fill={index === 0 ? "#3B82F6" : "#10B981"} />
@@ -507,11 +611,13 @@ export function JefeVentasView() {
                     </Pie>
                     <Tooltip
                       contentStyle={{
-                        backgroundColor: "hsl(var(--card))",
-                        border: "1px solid hsl(var(--border))",
-                        borderRadius: "var(--radius)",
-                        color: "hsl(var(--foreground))",
+                        backgroundColor: "#ffffff",
+                        border: "1px solid #e2e8f0",
+                        borderRadius: "8px",
+                        color: "#1e293b",
                       }}
+                      labelStyle={{ color: "#1e293b", fontWeight: "bold" }}
+                      itemStyle={{ color: "#334155" }}
                     />
                   </PieChart>
                 </ResponsiveContainer>
@@ -533,17 +639,18 @@ export function JefeVentasView() {
             <CardContent className="h-80">
               <ResponsiveContainer width="100%" height="100%">
                 <LineChart data={ultimos7Dias}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
-                  <XAxis dataKey="fecha" stroke="hsl(var(--foreground))" fontSize={12} />
-                  <YAxis stroke="hsl(var(--foreground))" fontSize={12} />
+                  <CartesianGrid strokeDasharray="3 3" stroke="#94a3b8" />
+                  <XAxis dataKey="fecha" stroke="#64748b" tick={{ fill: "#64748b" }} fontSize={12} />
+                  <YAxis stroke="#64748b" tick={{ fill: "#64748b" }} fontSize={12} />
                   <Tooltip
                     contentStyle={{
-                      backgroundColor: "hsl(var(--card))",
-                      border: "1px solid hsl(var(--border))",
-                      borderRadius: "var(--radius)",
-                      color: "hsl(var(--foreground))",
+                      backgroundColor: "#ffffff",
+                      border: "1px solid #e2e8f0",
+                      borderRadius: "8px",
+                      color: "#1e293b",
                     }}
-                    labelStyle={{ color: "hsl(var(--foreground))" }}
+                    labelStyle={{ color: "#1e293b", fontWeight: "bold" }}
+                    itemStyle={{ color: "#334155" }}
                   />
                   <Line
                     type="monotone"
