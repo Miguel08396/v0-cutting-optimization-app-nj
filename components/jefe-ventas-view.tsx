@@ -69,10 +69,14 @@ interface DatosCortadorPDF {
   tiempoEnchapeFlexible: number
 }
 
+// Constante: turno de 8 horas en segundos
+const TURNO_8_HORAS = 8 * 60 * 60 // 28800 segundos
+
 // Función para generar PDF de rendimiento
 function generarPDFRendimiento(
   datosCortadores: DatosCortadorPDF[],
-  mes: string
+  mes: string,
+  diasTrabajados: number = 1
 ) {
   const totales = datosCortadores.reduce((acc, c) => ({
     cortes: acc.cortes + c.cortes,
@@ -85,6 +89,9 @@ function generarPDFRendimiento(
     tiempoEnchapeFlexible: acc.tiempoEnchapeFlexible + c.tiempoEnchapeFlexible,
   }), { cortes: 0, laminas: 0, tiempoCorteTotal: 0, tiempoPausadoCorte: 0, cantoRigido: 0, cantoFlexible: 0, tiempoEnchapeRigido: 0, tiempoEnchapeFlexible: 0 })
 
+  // Calcular tiempos de turno por cortador
+  const turnoTotalPorCortador = TURNO_8_HORAS * diasTrabajados
+
   const contenidoHTML = `
     <!DOCTYPE html>
     <html>
@@ -94,6 +101,7 @@ function generarPDFRendimiento(
         body { font-family: Arial, sans-serif; padding: 30px; color: #333; font-size: 11px; }
         h1 { text-align: center; color: #1e40af; margin-bottom: 5px; font-size: 18px; }
         h2 { text-align: center; color: #6b7280; font-size: 12px; margin-bottom: 20px; }
+        h3 { color: #1e40af; font-size: 14px; margin-top: 25px; margin-bottom: 10px; border-bottom: 2px solid #10b981; padding-bottom: 5px; }
         table { width: 100%; border-collapse: collapse; margin-top: 15px; }
         th { background: #3b82f6; color: white; padding: 8px 4px; text-align: center; font-size: 10px; }
         td { padding: 6px 4px; border-bottom: 1px solid #e5e7eb; text-align: center; font-size: 10px; }
@@ -102,8 +110,13 @@ function generarPDFRendimiento(
         .nombre { text-align: left !important; }
         .header-info { display: flex; justify-content: space-between; margin-bottom: 15px; border-bottom: 2px solid #3b82f6; padding-bottom: 8px; }
         .fecha { color: #6b7280; font-size: 10px; }
-        .seccion { margin-top: 25px; }
-        .seccion-titulo { background: #10b981; color: white; padding: 8px; font-weight: bold; margin-bottom: 10px; }
+        .resumen-box { display: flex; gap: 15px; margin: 20px 0; }
+        .resumen-item { flex: 1; background: #f1f5f9; padding: 10px; border-radius: 8px; text-align: center; }
+        .resumen-valor { font-size: 16px; font-weight: bold; color: #1e40af; }
+        .resumen-label { font-size: 9px; color: #64748b; }
+        .tiempo-muerto { color: #ef4444; }
+        .tiempo-activo { color: #10b981; }
+        .tiempo-pausado { color: #f59e0b; }
         @media print { body { padding: 15px; } }
       </style>
     </head>
@@ -113,8 +126,40 @@ function generarPDFRendimiento(
         <span class="fecha">Generado: ${new Date().toLocaleDateString('es-ES', { day: '2-digit', month: 'long', year: 'numeric', hour: '2-digit', minute: '2-digit' })}</span>
       </div>
       <h1>Comparativo de Rendimiento por Cortador</h1>
-      <h2>Periodo: ${mes}</h2>
+      <h2>Periodo: ${mes} | Turno: 8 horas (${diasTrabajados} dia${diasTrabajados > 1 ? 's' : ''} trabajado${diasTrabajados > 1 ? 's' : ''})</h2>
       
+      <h3>Analisis de Turno por Cortador</h3>
+      <table>
+        <thead>
+          <tr>
+            <th class="nombre">Cortador</th>
+            <th>Turno Total</th>
+            <th>Tiempo Activo</th>
+            <th>Tiempo Pausado</th>
+            <th>Tiempo Muerto</th>
+            <th>% Productividad</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${datosCortadores.map(c => {
+            const tiempoActivo = c.tiempoCorteTotal + c.tiempoEnchapeRigido + c.tiempoEnchapeFlexible - c.tiempoPausadoCorte
+            const tiempoMuerto = Math.max(0, turnoTotalPorCortador - (c.tiempoCorteTotal + c.tiempoEnchapeRigido + c.tiempoEnchapeFlexible))
+            const productividad = turnoTotalPorCortador > 0 ? Math.round((tiempoActivo / turnoTotalPorCortador) * 100) : 0
+            return `
+              <tr>
+                <td class="nombre">${c.nombre}</td>
+                <td>${formatTiempoHMS(turnoTotalPorCortador)}</td>
+                <td class="tiempo-activo">${formatTiempoHMS(tiempoActivo)}</td>
+                <td class="tiempo-pausado">${formatTiempoHMS(c.tiempoPausadoCorte)}</td>
+                <td class="tiempo-muerto">${formatTiempoHMS(tiempoMuerto)}</td>
+                <td>${productividad}%</td>
+              </tr>
+            `
+          }).join('')}
+        </tbody>
+      </table>
+
+      <h3>Detalle de Produccion por Cortador</h3>
       <table>
         <thead>
           <tr>
@@ -122,31 +167,24 @@ function generarPDFRendimiento(
             <th>Trabajos</th>
             <th>Laminas</th>
             <th>Tiempo Corte</th>
-            <th>T. Pausado Corte</th>
             <th>Canto Rigido (m)</th>
             <th>T. Enchape Rigido</th>
             <th>Canto Flexible (m)</th>
             <th>T. Enchape Flexible</th>
-            <th>Eficiencia</th>
           </tr>
         </thead>
         <tbody>
           ${datosCortadores.map(c => {
-            const tiempoTotalTrabajo = c.tiempoCorteTotal + c.tiempoEnchapeRigido + c.tiempoEnchapeFlexible
-            const tiempoTotalPausado = c.tiempoPausadoCorte
-            const eficiencia = tiempoTotalTrabajo > 0 ? Math.round(((tiempoTotalTrabajo - tiempoTotalPausado) / tiempoTotalTrabajo) * 100) : 100
             return `
               <tr>
                 <td class="nombre">${c.nombre}</td>
                 <td>${c.cortes}</td>
                 <td>${c.laminas}</td>
                 <td>${formatTiempoHMS(c.tiempoCorteTotal)}</td>
-                <td>${formatTiempoHMS(c.tiempoPausadoCorte)}</td>
                 <td>${c.cantoRigido}</td>
                 <td>${formatTiempoHMS(c.tiempoEnchapeRigido)}</td>
                 <td>${c.cantoFlexible}</td>
                 <td>${formatTiempoHMS(c.tiempoEnchapeFlexible)}</td>
-                <td>${eficiencia}%</td>
               </tr>
             `
           }).join('')}
@@ -155,12 +193,10 @@ function generarPDFRendimiento(
             <td>${totales.cortes}</td>
             <td>${totales.laminas}</td>
             <td>${formatTiempoHMS(totales.tiempoCorteTotal)}</td>
-            <td>${formatTiempoHMS(totales.tiempoPausadoCorte)}</td>
             <td>${totales.cantoRigido}</td>
             <td>${formatTiempoHMS(totales.tiempoEnchapeRigido)}</td>
             <td>${totales.cantoFlexible}</td>
             <td>${formatTiempoHMS(totales.tiempoEnchapeFlexible)}</td>
-            <td>${totales.tiempoCorteTotal > 0 ? Math.round(((totales.tiempoCorteTotal - totales.tiempoPausadoCorte) / totales.tiempoCorteTotal) * 100) : 100}%</td>
           </tr>
         </tbody>
       </table>
