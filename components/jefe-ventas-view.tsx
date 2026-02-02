@@ -256,6 +256,17 @@ export function JefeVentasView() {
   const [isLoading, setIsLoading] = useState(true)
   const [mostrarSelectorInforme, setMostrarSelectorInforme] = useState(false)
   const [periodoInforme, setPeriodoInforme] = useState<"diario" | "semanal" | "mensual">("diario")
+  const [mesSeleccionado, setMesSeleccionado] = useState<string>(() => {
+    const hoy = new Date()
+    return `${hoy.getFullYear()}-${String(hoy.getMonth() + 1).padStart(2, '0')}`
+  })
+  const [semanaSeleccionada, setSemanaSeleccionada] = useState<string>(() => {
+    const hoy = new Date()
+    const inicioAno = new Date(hoy.getFullYear(), 0, 1)
+    const dias = Math.floor((hoy.getTime() - inicioAno.getTime()) / (24 * 60 * 60 * 1000))
+    const semana = Math.ceil((dias + inicioAno.getDay() + 1) / 7)
+    return `${hoy.getFullYear()}-W${String(semana).padStart(2, '0')}`
+  })
 
   const [nuevoUsuario, setNuevoUsuario] = useState({
     nombre: "",
@@ -429,31 +440,53 @@ export function JefeVentasView() {
   const generarInformePorPeriodo = () => {
     const hoy = new Date()
     let fechaInicio: Date
+    let fechaFin: Date
     let periodoTexto: string
     let diasTrabajados: number
 
     switch (periodoInforme) {
       case "diario":
         fechaInicio = new Date(hoy.getFullYear(), hoy.getMonth(), hoy.getDate(), 0, 0, 0)
+        fechaFin = new Date(hoy.getFullYear(), hoy.getMonth(), hoy.getDate(), 23, 59, 59)
         periodoTexto = hoy.toLocaleDateString('es-ES', { day: '2-digit', month: 'long', year: 'numeric' })
         diasTrabajados = 1
         break
       case "semanal":
-        const diaSemana = hoy.getDay()
-        const diffLunes = diaSemana === 0 ? 6 : diaSemana - 1
-        fechaInicio = new Date(hoy.getFullYear(), hoy.getMonth(), hoy.getDate() - diffLunes, 0, 0, 0)
-        const fechaFinSemana = new Date(fechaInicio)
-        fechaFinSemana.setDate(fechaFinSemana.getDate() + 6)
-        periodoTexto = `Semana del ${fechaInicio.toLocaleDateString('es-ES', { day: '2-digit', month: 'short' })} al ${fechaFinSemana.toLocaleDateString('es-ES', { day: '2-digit', month: 'short', year: 'numeric' })}`
+        // Parsear la semana seleccionada (formato: YYYY-Www)
+        const [yearSemana, weekPart] = semanaSeleccionada.split('-W')
+        const anoSemana = parseInt(yearSemana)
+        const numSemana = parseInt(weekPart)
+        
+        // Calcular fecha de inicio de la semana (lunes)
+        const primerDiaAno = new Date(anoSemana, 0, 1)
+        const diasHastaLunes = (primerDiaAno.getDay() + 6) % 7 // dias desde lunes
+        const primerLunesAno = new Date(anoSemana, 0, 1 - diasHastaLunes + (primerDiaAno.getDay() <= 4 ? 0 : 7))
+        fechaInicio = new Date(primerLunesAno)
+        fechaInicio.setDate(fechaInicio.getDate() + (numSemana - 1) * 7)
+        fechaInicio.setHours(0, 0, 0, 0)
+        
+        fechaFin = new Date(fechaInicio)
+        fechaFin.setDate(fechaFin.getDate() + 6)
+        fechaFin.setHours(23, 59, 59, 999)
+        
+        periodoTexto = `Semana ${numSemana} - Del ${fechaInicio.toLocaleDateString('es-ES', { day: '2-digit', month: 'short' })} al ${fechaFin.toLocaleDateString('es-ES', { day: '2-digit', month: 'short', year: 'numeric' })}`
         diasTrabajados = 6 // 6 dias laborales
         break
       case "mensual":
-        fechaInicio = new Date(hoy.getFullYear(), hoy.getMonth(), 1, 0, 0, 0)
-        periodoTexto = hoy.toLocaleDateString('es-ES', { month: 'long', year: 'numeric' })
+        // Parsear el mes seleccionado (formato: YYYY-MM)
+        const [yearMes, monthStr] = mesSeleccionado.split('-')
+        const anoMes = parseInt(yearMes)
+        const mes = parseInt(monthStr) - 1 // meses van de 0-11
+        
+        fechaInicio = new Date(anoMes, mes, 1, 0, 0, 0)
+        fechaFin = new Date(anoMes, mes + 1, 0, 23, 59, 59) // ultimo dia del mes
+        
+        periodoTexto = fechaInicio.toLocaleDateString('es-ES', { month: 'long', year: 'numeric' })
         diasTrabajados = 26 // Aproximado dias laborales mes
         break
       default:
         fechaInicio = new Date(hoy.getFullYear(), hoy.getMonth(), hoy.getDate(), 0, 0, 0)
+        fechaFin = new Date(hoy.getFullYear(), hoy.getMonth(), hoy.getDate(), 23, 59, 59)
         periodoTexto = hoy.toLocaleDateString('es-ES', { day: '2-digit', month: 'long', year: 'numeric' })
         diasTrabajados = 1
     }
@@ -464,7 +497,7 @@ export function JefeVentasView() {
       const fechaNota = np.fecha_fin_enchape ? new Date(np.fecha_fin_enchape) : 
                         np.fecha_fin_corte ? new Date(np.fecha_fin_corte) : null
       if (!fechaNota) return false
-      return fechaNota >= fechaInicio && fechaNota <= hoy
+      return fechaNota >= fechaInicio && fechaNota <= fechaFin
     })
 
     // Construir datos por cortador
@@ -1185,7 +1218,7 @@ export function JefeVentasView() {
             </CardHeader>
             <CardContent className="space-y-4">
               <div className="space-y-2">
-                <Label>Periodo del Informe</Label>
+                <Label>Tipo de Informe</Label>
                 <Select
                   value={periodoInforme}
                   onValueChange={(value: "diario" | "semanal" | "mensual") => setPeriodoInforme(value)}
@@ -1195,11 +1228,44 @@ export function JefeVentasView() {
                   </SelectTrigger>
                   <SelectContent>
                     <SelectItem value="diario">Diario (Hoy)</SelectItem>
-                    <SelectItem value="semanal">Semanal (Esta semana)</SelectItem>
-                    <SelectItem value="mensual">Mensual (Este mes)</SelectItem>
+                    <SelectItem value="semanal">Semanal</SelectItem>
+                    <SelectItem value="mensual">Mensual</SelectItem>
                   </SelectContent>
                 </Select>
               </div>
+              
+              {/* Selector de semana */}
+              {periodoInforme === "semanal" && (
+                <div className="space-y-2">
+                  <Label>Seleccionar Semana</Label>
+                  <Input
+                    type="week"
+                    value={semanaSeleccionada}
+                    onChange={(e) => setSemanaSeleccionada(e.target.value)}
+                    className="w-full"
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    Seleccione la semana que desea consultar
+                  </p>
+                </div>
+              )}
+              
+              {/* Selector de mes */}
+              {periodoInforme === "mensual" && (
+                <div className="space-y-2">
+                  <Label>Seleccionar Mes</Label>
+                  <Input
+                    type="month"
+                    value={mesSeleccionado}
+                    onChange={(e) => setMesSeleccionado(e.target.value)}
+                    className="w-full"
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    Seleccione el mes que desea consultar
+                  </p>
+                </div>
+              )}
+              
               <div className="bg-muted/50 p-3 rounded-lg text-sm">
                 <p className="font-medium mb-1">El informe incluira:</p>
                 <ul className="text-muted-foreground space-y-1 text-xs">
