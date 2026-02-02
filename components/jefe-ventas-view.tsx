@@ -254,6 +254,8 @@ export function JefeVentasView() {
   const [notasPedidoData, setNotasPedidoData] = useState<NotaPedido[]>([])
   const [usuarios, setUsuarios] = useState<Usuario[]>([])
   const [isLoading, setIsLoading] = useState(true)
+  const [mostrarSelectorInforme, setMostrarSelectorInforme] = useState(false)
+  const [periodoInforme, setPeriodoInforme] = useState<"diario" | "semanal" | "mensual">("diario")
 
   const [nuevoUsuario, setNuevoUsuario] = useState({
     nombre: "",
@@ -421,6 +423,86 @@ export function JefeVentasView() {
     } catch (error) {
       console.error("Error al descargar plano:", error)
     }
+  }
+
+  // Funcion para generar informe segun periodo seleccionado
+  const generarInformePorPeriodo = () => {
+    const hoy = new Date()
+    let fechaInicio: Date
+    let periodoTexto: string
+    let diasTrabajados: number
+
+    switch (periodoInforme) {
+      case "diario":
+        fechaInicio = new Date(hoy.getFullYear(), hoy.getMonth(), hoy.getDate(), 0, 0, 0)
+        periodoTexto = hoy.toLocaleDateString('es-ES', { day: '2-digit', month: 'long', year: 'numeric' })
+        diasTrabajados = 1
+        break
+      case "semanal":
+        const diaSemana = hoy.getDay()
+        const diffLunes = diaSemana === 0 ? 6 : diaSemana - 1
+        fechaInicio = new Date(hoy.getFullYear(), hoy.getMonth(), hoy.getDate() - diffLunes, 0, 0, 0)
+        const fechaFinSemana = new Date(fechaInicio)
+        fechaFinSemana.setDate(fechaFinSemana.getDate() + 6)
+        periodoTexto = `Semana del ${fechaInicio.toLocaleDateString('es-ES', { day: '2-digit', month: 'short' })} al ${fechaFinSemana.toLocaleDateString('es-ES', { day: '2-digit', month: 'short', year: 'numeric' })}`
+        diasTrabajados = 6 // 6 dias laborales
+        break
+      case "mensual":
+        fechaInicio = new Date(hoy.getFullYear(), hoy.getMonth(), 1, 0, 0, 0)
+        periodoTexto = hoy.toLocaleDateString('es-ES', { month: 'long', year: 'numeric' })
+        diasTrabajados = 26 // Aproximado dias laborales mes
+        break
+      default:
+        fechaInicio = new Date(hoy.getFullYear(), hoy.getMonth(), hoy.getDate(), 0, 0, 0)
+        periodoTexto = hoy.toLocaleDateString('es-ES', { day: '2-digit', month: 'long', year: 'numeric' })
+        diasTrabajados = 1
+    }
+
+    // Filtrar notas por periodo
+    const notasFiltradas = notasPedido.filter((np) => {
+      if (np.estado !== "completado" && np.estado !== "cerrado") return false
+      const fechaNota = np.fecha_fin_enchape ? new Date(np.fecha_fin_enchape) : 
+                        np.fecha_fin_corte ? new Date(np.fecha_fin_corte) : null
+      if (!fechaNota) return false
+      return fechaNota >= fechaInicio && fechaNota <= hoy
+    })
+
+    // Construir datos por cortador
+    const cortadoresDataMap = new Map<string, DatosCortadorPDF>()
+    notasFiltradas.forEach((np) => {
+      if (np.cortador_nombre) {
+        const existente = cortadoresDataMap.get(np.cortador_nombre) || {
+          nombre: np.cortador_nombre,
+          cortes: 0,
+          laminas: 0,
+          tiempoCorteTotal: 0,
+          tiempoPausadoCorte: 0,
+          cantoRigido: 0,
+          cantoFlexible: 0,
+          tiempoEnchapeRigido: 0,
+          tiempoEnchapeFlexible: 0,
+        }
+        existente.cortes += 1
+        existente.laminas += np.cantidad_laminas || 0
+        existente.tiempoCorteTotal += np.tiempo_corte || 0
+        existente.tiempoPausadoCorte += np.tiempo_pausado_corte || 0
+        existente.cantoRigido += np.canto_rigido || 0
+        existente.cantoFlexible += np.canto_flexible || 0
+        existente.tiempoEnchapeRigido += np.tiempo_enchape_rigido || 0
+        existente.tiempoEnchapeFlexible += np.tiempo_enchape_flexible || 0
+        cortadoresDataMap.set(np.cortador_nombre, existente)
+      }
+    })
+
+    const datosCortadores = Array.from(cortadoresDataMap.values())
+    
+    if (datosCortadores.length === 0) {
+      alert(`No hay datos para el periodo ${periodoTexto}`)
+      return
+    }
+
+    generarPDFRendimiento(datosCortadores, periodoTexto, diasTrabajados)
+    setMostrarSelectorInforme(false)
   }
 
   const handleCrearUsuario = async () => {
@@ -592,37 +674,7 @@ export function JefeVentasView() {
               <Button
                 variant="outline"
                 size="sm"
-                onClick={() => {
-                  // Construir datos completos por cortador
-                  const cortadoresDataMap = new Map<string, DatosCortadorPDF>()
-                  notasPedido.forEach((np) => {
-                    if (np.cortador_nombre && (np.estado === "completado" || np.estado === "cerrado")) {
-                      const existente = cortadoresDataMap.get(np.cortador_nombre) || {
-                        nombre: np.cortador_nombre,
-                        cortes: 0,
-                        laminas: 0,
-                        tiempoCorteTotal: 0,
-                        tiempoPausadoCorte: 0,
-                        cantoRigido: 0,
-                        cantoFlexible: 0,
-                        tiempoEnchapeRigido: 0,
-                        tiempoEnchapeFlexible: 0,
-                      }
-                      existente.cortes += 1
-                      existente.laminas += np.cantidad_laminas || 0
-                      existente.tiempoCorteTotal += np.tiempo_corte || 0
-                      existente.tiempoPausadoCorte += np.tiempo_pausado_corte || 0
-                      existente.cantoRigido += np.canto_rigido || 0
-                      existente.cantoFlexible += np.canto_flexible || 0
-                      existente.tiempoEnchapeRigido += np.tiempo_enchape_rigido || 0
-                      existente.tiempoEnchapeFlexible += np.tiempo_enchape_flexible || 0
-                      cortadoresDataMap.set(np.cortador_nombre, existente)
-                    }
-                  })
-                  const datosCortadores = Array.from(cortadoresDataMap.values())
-                  const mesActual = new Date().toLocaleDateString('es-ES', { month: 'long', year: 'numeric' })
-                  generarPDFRendimiento(datosCortadores, mesActual)
-                }}
+                onClick={() => setMostrarSelectorInforme(true)}
                 className="flex items-center gap-2"
               >
                 <Printer className="h-4 w-4" />
@@ -1119,6 +1171,64 @@ export function JefeVentasView() {
           </div>
         </TabsContent>
       </Tabs>
+
+      {/* Modal para seleccionar periodo del informe */}
+      {mostrarSelectorInforme && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+          <Card className="w-full max-w-md mx-4">
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2">
+                <Printer className="h-5 w-5" />
+                Generar Informe de Rendimiento
+              </CardTitle>
+              <CardDescription>Seleccione el periodo para el informe</CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="space-y-2">
+                <Label>Periodo del Informe</Label>
+                <Select
+                  value={periodoInforme}
+                  onValueChange={(value: "diario" | "semanal" | "mensual") => setPeriodoInforme(value)}
+                >
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="diario">Diario (Hoy)</SelectItem>
+                    <SelectItem value="semanal">Semanal (Esta semana)</SelectItem>
+                    <SelectItem value="mensual">Mensual (Este mes)</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="bg-muted/50 p-3 rounded-lg text-sm">
+                <p className="font-medium mb-1">El informe incluira:</p>
+                <ul className="text-muted-foreground space-y-1 text-xs">
+                  <li>- Analisis de turno por cortador (8 horas)</li>
+                  <li>- Tiempo activo, pausado y muerto</li>
+                  <li>- Porcentaje de productividad</li>
+                  <li>- Detalle de produccion (trabajos, laminas, canto)</li>
+                </ul>
+              </div>
+              <div className="flex gap-2">
+                <Button
+                  variant="outline"
+                  className="flex-1 bg-transparent"
+                  onClick={() => setMostrarSelectorInforme(false)}
+                >
+                  Cancelar
+                </Button>
+                <Button
+                  className="flex-1"
+                  onClick={generarInformePorPeriodo}
+                >
+                  <Printer className="h-4 w-4 mr-2" />
+                  Generar PDF
+                </Button>
+              </div>
+            </CardContent>
+          </Card>
+        </div>
+      )}
     </div>
   )
 }
